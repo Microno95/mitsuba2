@@ -108,6 +108,11 @@ public:
         return oss.str();
     }
 
+    void set_grad_suspended(bool state) override {
+        if constexpr(ek::is_diff_array_v<Float>)
+            ek::set_grad_suspended(m_distr.pdf(), state);
+    }
+
     MTS_DECLARE_CLASS()
 private:
     ContinuousDistribution<Wavelength> m_distr;

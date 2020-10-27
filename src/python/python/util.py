@@ -132,6 +132,19 @@ class SceneParameters:
             k: v for k, v in self.properties.items() if k in keys
         }
 
+    def set_grad_suspended(self, state: bool) -> None:
+        """
+        Suspend/Resume tracking of all gradients in the scene.
+
+        Params
+        ------
+
+        - state : whether to stop or resume recording gradients.
+        """
+
+        for obj in self.hierarchy.keys():
+            obj.set_grad_suspended(state)
+
 
 def traverse(node: 'mitsuba.core.Object') -> SceneParameters:
     """

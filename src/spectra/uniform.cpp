@@ -83,6 +83,11 @@ public:
         return tfm::format("UniformSpectrum[value=%f]", m_value);
     }
 
+    void set_grad_suspended(bool state) override {
+        if constexpr(ek::is_diff_array_v<Float>)
+            ek::set_grad_suspended(m_value, state);
+    }
+
     MTS_DECLARE_CLASS()
 private:
     Float m_value;

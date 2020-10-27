@@ -713,6 +713,13 @@ public:
         return oss.str();
     }
 
+    void set_grad_suspended(bool state) {
+        if constexpr (ek::is_diff_array_v<Float>) {
+            for (auto level : m_levels)
+                ek::set_grad_suspended(level.data, state);
+        }
+    }
+
 protected:
     struct Level {
         uint32_t size;
@@ -1070,6 +1077,14 @@ public:
         oss << util::mem_string(size * sizeof(ScalarFloat)) << " }" << std::endl
             << "]";
         return oss.str();
+    }
+
+    void set_grad_suspended(bool state) {
+        if constexpr (ek::is_diff_array_v<Float>) {
+            ek::set_grad_suspended(m_data, state);
+            ek::set_grad_suspended(m_marg_cdf, state);
+            ek::set_grad_suspended(m_cond_cdf, state);
+        }
     }
 
 protected:

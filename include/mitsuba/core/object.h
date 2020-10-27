@@ -115,6 +115,13 @@ public:
      */
     virtual std::string to_string() const;
 
+    /**
+     * \brief Suspend or resume tracking of derivatives of the object and its children.
+     *
+     * This allows to stop keeping track of gradients while not recomputing intermediate values (e.g. normals, height fields...)
+     */
+    virtual void set_grad_suspended(bool state);
+
 protected:
     /** \brief Virtual protected deconstructor.
      * (Will only be called by \ref ref)
