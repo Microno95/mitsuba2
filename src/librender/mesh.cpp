@@ -860,7 +860,7 @@ MTS_VARIANT void Mesh<Float, Spectrum>::traverse(TraversalCallback *callback) {
     callback->put_parameter("vertex_normals",   m_vertex_normals);
     callback->put_parameter("vertex_texcoords", m_vertex_texcoords);
 
-    for(auto &[name, attribute]: m_mesh_attributes)
+    for (auto &[name, attribute]: m_mesh_attributes)
         callback->put_parameter(name, attribute.buf);
 }
 
@@ -896,8 +896,10 @@ MTS_VARIANT void Mesh<Float, Spectrum>::set_grad_suspended(bool state) {
 
 MTS_VARIANT bool Mesh<Float, Spectrum>::parameters_grad_enabled() const {
     if constexpr (ek::is_diff_array_v<Float>) {
-        //TODO: add mesh attributes.
-        return ek::grad_enabled(m_vertex_positions) ||
+        bool result = false;
+        for (auto &[name, attribute]: m_mesh_attributes)
+            result |= ek::grad_enabled(attribute.buf);
+        return result || ek::grad_enabled(m_vertex_positions) ||
                ek::grad_enabled(m_vertex_normals) ||
                ek::grad_enabled(m_vertex_texcoords);
     }
