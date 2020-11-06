@@ -593,10 +593,8 @@ public:
     }
 
     void set_grad_suspended(bool state) override {
-        if constexpr(ek::is_diff_array_v<Float>)
-            ek::set_grad_suspended(m_data, state);
+        m_distr2d->set_grad_suspended(state);
     }
-
     MTS_DECLARE_CLASS()
 
 protected:

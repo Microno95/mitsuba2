@@ -891,13 +891,7 @@ MTS_VARIANT void Mesh<Float, Spectrum>::parameters_changed(const std::vector<std
 }
 
 MTS_VARIANT void Mesh<Float, Spectrum>::set_grad_suspended(bool state) {
-    if constexpr (ek::is_diff_array_v<Float>) {
-        ek::set_grad_suspended(m_vertex_positions, state);
-        ek::set_grad_suspended(m_vertex_normals, state);
-        ek::set_grad_suspended(m_vertex_texcoords, state);
-        for(auto &[name, attribute]: m_mesh_attributes)
-            ek::set_grad_suspended(attribute.buf, state);
-    }
+    m_area_pmf.set_grad_suspended(state);
 }
 
 MTS_VARIANT bool Mesh<Float, Spectrum>::parameters_grad_enabled() const {

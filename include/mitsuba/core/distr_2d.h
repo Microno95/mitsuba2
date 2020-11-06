@@ -179,6 +179,12 @@ public:
         return oss.str();
     }
 
+    void set_grad_suspended(bool state) {
+        ek::set_grad_suspended(m_data, state);
+        ek::set_grad_suspended(m_marg_cdf, state);
+        ek::set_grad_suspended(m_cond_cdf, state);
+    }
+
 protected:
     /// Resolution of the discretized density function
     ScalarVector2u m_size;

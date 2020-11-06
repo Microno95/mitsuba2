@@ -142,8 +142,10 @@ class SceneParameters:
         - state : whether to stop or resume recording gradients.
         """
 
-        for obj in self.hierarchy.keys():
-            obj.set_grad_suspended(state)
+        for obj, (parent, depth) in self.hierarchy.items():
+            if depth == 0: # root node
+                suspend_gradients(obj, state)
+                break
 
 
 def traverse(node: 'mitsuba.core.Object') -> SceneParameters:
@@ -197,3 +199,32 @@ def traverse(node: 'mitsuba.core.Object') -> SceneParameters:
     node.traverse(cb)
 
     return SceneParameters(cb.properties, cb.hierarchy)
+
+def suspend_gradients(node: 'mitsuba.core.Object', state: 'bool') -> None:
+    """
+    Traverse a node of Mitsuba's scene graph and suspend/resume keeping track of derivatives.
+    """
+    from mitsuba.core import TraversalCallback
+
+    class SuspendCallback(TraversalCallback):
+        def __init__(self, node, state):
+            TraversalCallback.__init__(self)
+            self.state = state
+            self.node=node
+
+            from mitsuba.core import get_property
+            self.get_property = get_property
+
+        def put_parameter(self, name, cpptype, ptr):
+            ek.set_grad_suspended(self.get_property(ptr, cpptype, self.node), self.state)
+
+        def put_object(self, name, node):
+            node.set_grad_suspended(self.state) # Suspend hidden parameters if necessary
+            cb = SuspendCallback(
+                node=node,
+                state=self.state,
+            )
+            node.traverse(cb)
+
+    cb = SuspendCallback(node, state)
+    node.traverse(cb)
