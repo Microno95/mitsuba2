@@ -130,7 +130,7 @@ public:
      * it to properly suspend the tracking of their gradients.
      *
      * \param state
-     *      Whether to stop or resume recording derivatives.
+     *      Whether to suspend or resume recording derivatives.
      */
     virtual void set_grad_suspended(bool state);
 
