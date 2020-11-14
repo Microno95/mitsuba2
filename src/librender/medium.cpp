@@ -94,8 +94,8 @@ Medium<Float, Spectrum>::eval_tr_eps_and_pdf(const MediumInteraction3f &mi,
 
     Float t                       = min(mi.t, si.t) - mi.mint;
     UnpolarizedSpectrum tr        = exp(-t * mi.combined_extinction);
-    UnpolarizedSpectrum eps       = (mi.emissivity / mi.sigma_t) * (1.f - tr);
-    //UnpolarizedSpectrum eps       = mi.emissivity;
+    //UnpolarizedSpectrum eps       = (mi.emissivity / mi.combined_extinction) * (1.f - tr);
+    UnpolarizedSpectrum eps       = mi.emissivity;
     UnpolarizedSpectrum pdf       = select(si.t < mi.t, tr, tr * mi.combined_extinction);
     return { tr, eps, pdf };
 }
