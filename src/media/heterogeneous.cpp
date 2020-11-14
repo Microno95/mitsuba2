@@ -59,7 +59,7 @@ public:
     UnpolarizedSpectrum get_emission_coefficient(const MediumInteraction3f &mi,
                                                  Mask active) const override {
         MTS_MASKED_FUNCTION(ProfilerPhase::MediumEvaluate, active);
-        return m_emissivity->eval(mi, active);
+        return m_emissivity->eval(mi, active) * m_emission_scale;
     }
 
     void traverse(TraversalCallback *callback) override {
