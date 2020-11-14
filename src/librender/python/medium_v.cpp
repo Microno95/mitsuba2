@@ -20,6 +20,10 @@ public:
         PYBIND11_OVERLOAD_PURE(UnpolarizedSpectrum, Medium, get_combined_extinction, mi, active);
     }
 
+    UnpolarizedSpectrum get_emission_coefficient(const MediumInteraction3f &mi, Mask active = true) const override {
+        PYBIND11_OVERLOAD_PURE(UnpolarizedSpectrum, Medium, get_emission_coefficient, mi, active);
+    }
+
     std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum>
     get_scattering_coefficients(const MediumInteraction3f &mi, Mask active = true) const override {
         using Return = std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum>;
@@ -40,8 +44,9 @@ MTS_PY_EXPORT(Medium) {
             .def("intersect_aabb", vectorize(&Medium::intersect_aabb), "ray"_a)
             .def("get_combined_extinction", vectorize(&Medium::get_combined_extinction), "mi"_a, "active"_a=true)
             .def("get_scattering_coefficients", vectorize(&Medium::get_scattering_coefficients), "mi"_a, "active"_a=true)
+            .def("get_emission_coefficient", vectorize(&Medium::get_emission_coefficient), "mi"_a, "active"_a=true)
             .def("sample_interaction", vectorize(&Medium::sample_interaction), "ray"_a, "sample"_a, "channel"_a, "active"_a=true)
-            .def("eval_tr_and_pdf", vectorize(&Medium::eval_tr_and_pdf), "mi"_a, "si"_a, "active"_a=true)
+            .def("eval_tr_eps_and_pdf", vectorize(&Medium::eval_tr_eps_and_pdf), "mi"_a, "si"_a, "active"_a=true)
             .def_method(Medium, phase_function)
             .def_method(Medium, use_emitter_sampling)
             // .def_method(Medium, is_homogeneous)

@@ -131,6 +131,61 @@ public:
     // =============================================================
 
     // =============================================================
+    //! @{ \name Sampling interface
+    // =============================================================
+
+    /**
+     * \brief Direct illumination sampling routine
+     *
+     * Given an arbitrary reference point in the scene, this method samples a
+     * direction from the reference point to towards a volume emitter.
+     *
+     * Ideally, the implementation should importance sample the product of the
+     * emission profile and the geometry term between the reference point and
+     * the position on the emitter.
+     *
+     * \param ref
+     *    A reference point somewhere within the scene
+     *
+     * \param sample
+     *    A uniformly distributed 2D vector
+     *
+     * \param test_visibility
+     *    When set to \c true, a shadow ray will be cast to ensure that the
+     *    sampled emitter position and the reference point are mutually visible.
+     *
+     * \return
+     *    Radiance received along the sampled ray divided by the sample
+     *    probability.
+     */
+    std::pair<DirectionSample3f, Spectrum>
+    sample_volume_emitter_direction(const Interaction3f &ref, 
+                                    const Point2f &sample,
+                                    bool test_visibility = true,
+                                    Mask active          = true) const;
+
+    /**
+     * \brief Evaluate the probability density of the  \ref
+     * sample_volume_emitter_direction() technique given an filled-in \ref
+     * DirectionSample record.
+     *
+     * \param ref
+     *    A reference point somewhere within the scene
+     *
+     * \param ds
+     *    A direction sampling record, which specifies the query location.
+     *
+     * \return
+     *    The solid angle density expressed of the sample
+     */
+    Float pdf_volume_emitter_direction(const Interaction3f &ref,
+                                       const DirectionSample3f &ds,
+                                       Mask active = true) const;
+
+    //! @}
+    // =============================================================
+
+    // =============================================================
     //! @{ \name Accessors
     // =============================================================
 
@@ -213,6 +268,7 @@ protected:
     ScalarBoundingBox3f m_bbox;
 
     host_vector<ref<Emitter>, Float> m_emitters;
+    std::vector<ref<Shape>> m_emissive_mediums;
     std::vector<ref<Shape>> m_shapes;
     std::vector<ref<ShapeGroup>> m_shapegroups;
     std::vector<ref<Sensor>> m_sensors;

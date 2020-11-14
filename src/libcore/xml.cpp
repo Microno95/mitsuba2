@@ -81,7 +81,7 @@ struct Version {
 // Check if the name corresponds to an unbounded spectrum property which require
 // special handling
 bool is_unbounded_spectrum(const std::string &name) {
-    return name == "eta" || name == "k" || name == "int_ior" || name == "ext_ior";
+    return name == "eta" || name == "k" || name == "int_ior" || name == "ext_ior" || name == "emissivity";
 }
 
 NAMESPACE_BEGIN(detail)

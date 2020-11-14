@@ -37,6 +37,9 @@ MTS_VARIANT Scene<Float, Spectrum>::Scene(const Properties &props) {
                 m_shapegroups.push_back((ShapeGroup*)shape);
             } else {
                 m_bbox.expand(shape->bbox());
+                if (shape->interior_medium()) {
+                    m_emissive_mediums.push_back(shape);
+                }
                 m_shapes.push_back(shape);
             }
         } else if (emitter) {
@@ -227,6 +230,75 @@ Scene<Float, Spectrum>::pdf_emitter_direction(const Interaction3f &ref,
     } else {
         return reinterpret_array<EmitterPtr>(ds.object)->pdf_direction(ref, ds, active) *
             (1.f / m_emitters.size());
+    }
+}
+
+MTS_VARIANT std::pair<typename Scene<Float, Spectrum>::DirectionSample3f, Spectrum>
+Scene<Float, Spectrum>::sample_volume_emitter_direction(const Interaction3f &ref,
+                                                        const Point2f &sample_,
+                                                        bool test_visibility,
+                                                        Mask active) const {
+    MTS_MASKED_FUNCTION(ProfilerPhase::SampleEmitterDirection, active);
+
+    using ShapePtr = replace_scalar_t<Float, Shape*>;
+
+    Point2f sample(sample_);
+    DirectionSample3f ds;
+    Spectrum spec(0.f);
+
+    if (likely(!m_emissive_mediums.empty())) {
+        if (m_emissive_mediums.size() == 1) {
+            // Fast path if there is only one emitter
+            ds    = m_emissive_mediums[0]->sample_direction(ref, sample, active);
+            spec *= m_emissive_mediums[0]->pdf_direction(ref, ds, active);
+        } else {
+            ScalarFloat emitter_pdf = 1.f / m_emissive_mediums.size();
+
+            // Randomly pick an emitter
+            UInt32 index = min(UInt32(sample.x() * (ScalarFloat) m_emissive_mediums.size()), (uint32_t) m_emissive_mediums.size() - 1);
+
+            // Rescale sample.x() to lie in [0,1) again
+            sample.x() = (sample.x() - index * emitter_pdf) * m_emissive_mediums.size();
+
+            ShapePtr emitter = gather<ShapePtr>(m_emissive_mediums.data(), index, active);
+
+            // Sample a direction towards the emitter
+            ds = emitter->sample_direction(ref, sample, active);
+
+            // Account for the discrete probability of sampling this emitter
+            ds.pdf *= emitter_pdf * emitter->pdf_direction(ref, ds, active);
+            spec   *= emitter->pdf_direction(ref, ds, active);
+        }
+
+        active &= neq(ds.pdf, 0.f);
+
+        // Perform a visibility test if requested
+        if (test_visibility && any_or<true>(active)) {
+            Ray3f ray(ref.p, ds.d,
+                      math::RayEpsilon<Float> * (1.f + hmax(abs(ref.p))),
+                      ds.dist * (1.f - math::ShadowEpsilon<Float>), ref.time,
+                      ref.wavelengths);
+            spec[ray_test(ray, active)] = 0.f;
+        }
+    } else {
+        ds   = zero<DirectionSample3f>();
+        spec = 0.f;
+    }
+
+    return { ds, spec };
+}
+
+MTS_VARIANT Float Scene<Float, Spectrum>::pdf_volume_emitter_direction(const Interaction3f &ref, 
+                                                                       const DirectionSample3f &ds, 
+                                                                       Mask active) const {
+    MTS_MASK_ARGUMENT(active);
+    using ShapePtr = replace_scalar_t<Float, Shape*>;
+
+    if (m_emissive_mediums.size() == 1) {
+        // Fast path if there is only one emitter
+        return m_emissive_mediums[0]->pdf_direction(ref, ds, active);
+    } else {
+        return reinterpret_array<ShapePtr>(ds.object)->pdf_direction(ref, ds, active) * (1.f / m_emissive_mediums.size());
     }
 }
 

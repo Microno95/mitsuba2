@@ -15,16 +15,19 @@ NAMESPACE_BEGIN(mitsuba)
 template <typename Float, typename Spectrum>
 class HeterogeneousMedium final : public Medium<Float, Spectrum> {
 public:
-    MTS_IMPORT_BASE(Medium, m_is_homogeneous, m_has_spectral_extinction)
+    MTS_IMPORT_BASE(Medium, m_is_homogeneous, m_has_spectral_extinction, m_has_emission)
     MTS_IMPORT_TYPES(Scene, Sampler, Texture, Volume)
 
     HeterogeneousMedium(const Properties &props) : Base(props) {
         m_is_homogeneous = false;
         m_albedo = props.volume<Volume>("albedo", 0.75f);
         m_sigmat = props.volume<Volume>("sigma_t", 1.f);
+        m_emissivity     = props.volume<Volume>("emissivity", 0.0f);
 
-        m_scale = props.float_("scale", 1.0f);
+        m_scale          = props.float_("scale", 1.0f);
+        m_emission_scale = props.float_("emission_scale", 1.0f);
         m_has_spectral_extinction = props.bool_("has_spectral_extinction", true);
+        m_has_emission = props.bool_("has_emission", true);
 
         m_max_density = m_scale * m_sigmat->max();
         m_aabb        = m_sigmat->bbox();
@@ -53,27 +56,37 @@ public:
         return m_aabb.ray_intersect(ray);
     }
 
+    UnpolarizedSpectrum get_emission_coefficient(const MediumInteraction3f &mi,
+                                                 Mask active) const override {
+        MTS_MASKED_FUNCTION(ProfilerPhase::MediumEvaluate, active);
+        return m_emissivity->eval(mi, active);
+    }
+
     void traverse(TraversalCallback *callback) override {
         callback->put_parameter("scale", m_scale);
+        callback->put_parameter("emission_scale", m_scale);
         callback->put_object("albedo", m_albedo.get());
         callback->put_object("sigma_t", m_sigmat.get());
+        callback->put_object("emissivity", m_emissivity.get());
         Base::traverse(callback);
     }
 
     std::string to_string() const override {
         std::ostringstream oss;
         oss << "HeterogeneousMedium[" << std::endl
-            << "  albedo  = " << string::indent(m_albedo) << std::endl
-            << "  sigma_t = " << string::indent(m_sigmat) << std::endl
-            << "  scale   = " << string::indent(m_scale) << std::endl
+            << "  albedo     = " << string::indent(m_albedo) << std::endl
+            << "  sigma_t    = " << string::indent(m_sigmat) << std::endl
+            << "  emissivity = " << string::indent(m_emissivity) << std::endl
+            << "  scale      = " << string::indent(m_scale) << std::endl
+            << "  emission_scale = " << string::indent(m_emission_scale) << std::endl
             << "]";
         return oss.str();
     }
 
     MTS_DECLARE_CLASS()
 private:
-    ref<Volume> m_sigmat, m_albedo;
-    ScalarFloat m_scale;
+    ref<Volume> m_sigmat, m_albedo, m_emissivity;
+    ScalarFloat m_scale, m_emission_scale;
 
     ScalarBoundingBox3f m_aabb;
     ScalarFloat m_max_density;

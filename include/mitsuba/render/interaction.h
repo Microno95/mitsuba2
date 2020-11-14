@@ -395,7 +395,7 @@ struct MediumInteraction : Interaction<Float_, Spectrum_> {
     /// Incident direction in the local shading frame
     Vector3f wi;
 
-    UnpolarizedSpectrum sigma_s, sigma_n, sigma_t, combined_extinction;
+    UnpolarizedSpectrum sigma_s, sigma_n, sigma_t, combined_extinction, emissivity;
 
     /// mint used when sampling the given distance "t".
     Float mint;
@@ -424,7 +424,8 @@ struct MediumInteraction : Interaction<Float_, Spectrum_> {
 
     ENOKI_DERIVED_STRUCT(MediumInteraction, Base,
         ENOKI_BASE_FIELDS(t, time, wavelengths, p),
-        ENOKI_DERIVED_FIELDS(medium, sh_frame, wi, sigma_s, sigma_n, sigma_t, combined_extinction, mint)
+        ENOKI_DERIVED_FIELDS(medium, sh_frame, wi, sigma_s, sigma_n, sigma_t,
+                             combined_extinction, emissivity, mint)
     )
 };
 
@@ -700,7 +701,7 @@ ENOKI_STRUCT_SUPPORT(mitsuba::SurfaceInteraction, t, time, wavelengths, p,
                      prim_index, instance)
 
 ENOKI_STRUCT_SUPPORT(mitsuba::MediumInteraction, t, time, wavelengths, p,
-                     medium, sh_frame, wi, sigma_s, sigma_n, sigma_t, combined_extinction, mint)
+                     medium, sh_frame, wi, sigma_s, sigma_n, sigma_t, combined_extinction, emissivity, mint)
 
 ENOKI_STRUCT_SUPPORT(mitsuba::PreliminaryIntersection, t, prim_uv, prim_index, shape_index, shape, instance)
 

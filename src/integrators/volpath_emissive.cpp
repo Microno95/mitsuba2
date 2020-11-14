@@ -13,14 +13,14 @@
 NAMESPACE_BEGIN(mitsuba)
 
 template <typename Float, typename Spectrum>
-class VolumetricPathIntegrator : public MonteCarloIntegrator<Float, Spectrum> {
+class EmissiveVolumetricPathIntegrator : public MonteCarloIntegrator<Float, Spectrum> {
 
 public:
     MTS_IMPORT_BASE(MonteCarloIntegrator, m_max_depth, m_rr_depth, m_hide_emitters)
     MTS_IMPORT_TYPES(Scene, Sampler, Emitter, EmitterPtr, BSDF, BSDFPtr,
                      Medium, MediumPtr, PhaseFunctionContext)
 
-    VolumetricPathIntegrator(const Properties &props) : Base(props) {
+    EmissiveVolumetricPathIntegrator(const Properties &props) : Base(props) {
     }
 
     MTS_INLINE
@@ -76,11 +76,19 @@ public:
             // solid angle compression at refractive index boundaries. Stop with at least some
             // probability to avoid  getting stuck (e.g. due to total internal reflection)
 
+            /*if (any(select(active, throughput, 0.f) > 1.f)) {
+                Throw("Throughput is greater than 1.f!");
+            }*/
+
             active &= any(neq(depolarize(throughput), 0.f));
             Float q = min(hmax(depolarize(throughput)) * sqr(eta), .95f);
             Mask perform_rr = (depth > (uint32_t) m_rr_depth);
             active &= sampler->next_1d(active) < q || !perform_rr;
             masked(throughput, perform_rr) *= rcp(detach(q));
+
+            /*if (any(select(active, throughput, 0.f) > 1.f)) {
+                Throw("Throughput is greater than 1.f!");
+            }*/
 
             Mask exceeded_max_depth = depth >= (uint32_t) m_max_depth;
             if (none(active) || all(exceeded_max_depth))
@@ -89,66 +97,89 @@ public:
             // ----------------------- Sampling the RTE -----------------------
             Mask active_medium  = active && neq(medium, nullptr);
             Mask active_surface = active && !active_medium;
-            Mask act_null_scatter = false, act_medium_scatter = false,
-                 escaped_medium = false;
-
-            // If the medium does not have a spectrally varying extinction,
-            // we can perform a few optimizations to speed up rendering
-            Mask is_spectral = active_medium;
-            Mask not_spectral = false;
-            if (any_or<true>(active_medium)) {
-                is_spectral &= medium->has_spectral_extinction();
-                not_spectral = !is_spectral && active_medium;
-            }
+            Mask act_absorption = false, act_null_scatter = false, 
+				 act_medium_scatter = false, escaped_medium = false;
 
             if (any_or<true>(active_medium)) {
                 mi = medium->sample_interaction(ray, sampler->next_1d(active_medium), channel, active_medium);
                 masked(ray.maxt, active_medium && medium->is_homogeneous() && mi.is_valid()) = mi.t;
                 Mask intersect = needs_intersection && active_medium;
-                if (any_or<true>(intersect))
+                if (any_or<true>(intersect)) {
                     masked(si, intersect) = scene->ray_intersect(ray, intersect);
+                }
                 needs_intersection &= !active_medium;
 
                 masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
-                if (any_or<true>(is_spectral)) {
-                    auto [tr, eps, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, is_spectral);
-                    Float tr_pdf = index_spectrum(free_flight_pdf, channel);
-                    masked(throughput, is_spectral) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
+
+                // Handle absorption, null and real scatter events
+                auto medium_sample_eta   = sampler->next_1d(active_medium);
+                Mask absorption_emission_interaction = medium_sample_eta <= (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
+                Mask scatter_interaction = medium_sample_eta < 1 - index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel)
+                                           && medium_sample_eta > (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
+                Mask null_interaction    = medium_sample_eta > 1 - index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
+
+                act_absorption     |= absorption_emission_interaction && active_medium;
+                act_medium_scatter |= scatter_interaction && active_medium;
+                act_null_scatter   |= null_interaction && active_medium;
+
+                auto [tr, eps, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, active_medium);
+                Float tr_pdf = index_spectrum(free_flight_pdf, channel);
+
+                if (any_or<true>(act_absorption)) {
+                    Float prob_absorption           = (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
+                    auto weight_absorption          = ((mi.sigma_t - mi.sigma_s) / prob_absorption);
+                    //auto weight_absorption = (mi.sigma_t - mi.sigma_s);
+                    masked(result, act_absorption) += select(tr_pdf > 0.f, throughput * eps * weight_absorption / tr_pdf, 0.f);
                 }
+                
+                masked(throughput, active_medium) *= tr / tr_pdf;
 
-                escaped_medium = active_medium && !mi.is_valid();
-                active_medium &= mi.is_valid();
+                escaped_medium      = active_medium && !mi.is_valid();
+                active_medium      &= mi.is_valid();
 
-                // Handle null and real scatter events
-                Mask null_scatter = sampler->next_1d(active_medium) >= index_spectrum(mi.sigma_t, channel) / index_spectrum(mi.combined_extinction, channel);
+                act_absorption     &= active_medium;
+                act_medium_scatter &= active_medium;
+                act_null_scatter   &= active_medium;
 
-                act_null_scatter |= null_scatter && active_medium;
-                act_medium_scatter |= !act_null_scatter && active_medium;
+                /*if (any(select(active, throughput, 0.f) > 1.f)) {
+                    Throw("Throughput is greater than 1.f!");
+                }*/
 
-                if (any_or<true>(is_spectral && act_null_scatter))
-                    masked(throughput, is_spectral && act_null_scatter) *=
-                        mi.sigma_n * index_spectrum(mi.combined_extinction, channel) /
-                        index_spectrum(mi.sigma_n, channel);
+                if (any_or<true>(act_null_scatter)) {
+                    Float prob_null  = index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
+                    auto weight_null = (mi.sigma_n / prob_null);
+                    //auto weight_null = mi.sigma_n;
+                    masked(throughput, act_null_scatter) *= weight_null;
+
+                    /*if (any(select(active, throughput, 0.f) > 1.f)) {
+                        Throw("Throughput is greater than 1.f!");
+                    }*/
+                }
 
                 masked(depth, act_medium_scatter) += 1;
             }
 
             // Dont estimate lighting if we exceeded number of bounces
             active &= depth < (uint32_t) m_max_depth;
+            active &= !act_absorption;
             act_medium_scatter &= active;
+            act_null_scatter   &= active;
 
             if (any_or<true>(act_null_scatter)) {
-                masked(ray.o, act_null_scatter) = mi.p;
+                masked(ray.o, act_null_scatter)    = mi.p;
                 masked(ray.mint, act_null_scatter) = 0.f;
-                masked(si.t, act_null_scatter) = si.t - mi.t;
+                masked(si.t, act_null_scatter)     = si.t - mi.t;
             }
-
+            
             if (any_or<true>(act_medium_scatter)) {
-                if (any_or<true>(is_spectral))
-                    masked(throughput, is_spectral && act_medium_scatter) *=
-                        mi.sigma_s * index_spectrum(mi.combined_extinction, channel) / index_spectrum(mi.sigma_t, channel);
-                if (any_or<true>(not_spectral))
-                    masked(throughput, not_spectral && act_medium_scatter) *= mi.sigma_s / mi.sigma_t;
+                Float prob_scatter  = (index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
+                auto weight_scatter = (mi.sigma_s / prob_scatter);
+                //auto weight_scatter = (mi.sigma_s);
+                masked(throughput, act_medium_scatter) *= weight_scatter;
+
+                /*if (any(select(active, throughput, 0.f) > 1.f)) {
+                    Throw("Throughput is greater than 1.f!");
+                }*/
 
                 PhaseFunctionContext phase_ctx(sampler);
                 auto phase = mi.medium->phase_function();
@@ -184,11 +215,9 @@ public:
             if (any_or<true>(active_surface)) {
                 // ---------------- Intersection with emitters ----------------
                 EmitterPtr emitter = si.emitter(scene);
-                Mask use_emitter_contribution =
-                    active_surface && specular_chain && neq(emitter, nullptr);
+                Mask use_emitter_contribution = active_surface && specular_chain && neq(emitter, nullptr);
                 if (any_or<true>(use_emitter_contribution))
-                    masked(result, use_emitter_contribution) +=
-                        throughput * emitter->eval(si, use_emitter_contribution);
+                    masked(result, use_emitter_contribution) += throughput * emitter->eval(si, use_emitter_contribution);
             }
             active_surface &= si.is_valid();
             if (any_or<true>(active_surface)) {
@@ -217,6 +246,11 @@ public:
                 bsdf_val = si.to_world_mueller(bsdf_val, -bs.wo, si.wi);
 
                 masked(throughput, active_surface) *= bsdf_val;
+
+                /*if (any(select(active, throughput, 0.f) > 1.f)) {
+                    Throw("Throughput is greater than 1.f!");
+                }*/
+
                 masked(eta, active_surface) *= bs.eta;
 
                 Ray bsdf_ray                = si.spawn_ray(si.to_world(bs.wo));
@@ -325,9 +359,11 @@ public:
                     masked(ray.o, active_medium)    = mi.p;
                     masked(ray.mint, active_medium) = 0.f;
                     masked(si.t, active_medium) = si.t - mi.t;
+                    Float prob_null  = index_spectrum( mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
+                    auto weight_null = (mi.sigma_n / prob_null);
 
                     if (any_or<true>(is_spectral))
-                        masked(transmittance, is_spectral) *= mi.sigma_n;
+                        masked(transmittance, is_spectral)  *= select(neq(mi.sigma_n, 0.f), weight_null, 0.f);
                     if (any_or<true>(not_spectral))
                         masked(transmittance, not_spectral) *= mi.sigma_n / mi.combined_extinction;
                 }
@@ -412,9 +448,11 @@ public:
                     masked(ray.o, active_medium)    = mi.p;
                     masked(ray.mint, active_medium) = 0.f;
                     masked(si.t, active_medium) = si.t - mi.t;
+                    Float prob_null  = index_spectrum( mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
+                    auto weight_null = (mi.sigma_n / prob_null);
 
                     if (any_or<true>(is_spectral))
-                        masked(transmittance, is_spectral && active_medium) *= mi.sigma_n;
+                        masked(transmittance, is_spectral)  *= select(neq(mi.sigma_n, 0.f), weight_null, 0.f);
                     if (any_or<true>(not_spectral))
                         masked(transmittance, not_spectral && active_medium) *= mi.sigma_n / mi.combined_extinction;
                 }
@@ -469,7 +507,7 @@ public:
     // =============================================================
 
     std::string to_string() const override {
-        return tfm::format("VolumetricSimplePathIntegrator[\n"
+        return tfm::format("EmissiveVolumetricSimplePathIntegrator[\n"
                            "  max_depth = %i,\n"
                            "  rr_depth = %i\n"
                            "]",
@@ -485,6 +523,6 @@ public:
     MTS_DECLARE_CLASS()
 };
 
-MTS_IMPLEMENT_CLASS_VARIANT(VolumetricPathIntegrator, MonteCarloIntegrator);
-MTS_EXPORT_PLUGIN(VolumetricPathIntegrator, "Volumetric Path Tracer integrator");
+MTS_IMPLEMENT_CLASS_VARIANT(EmissiveVolumetricPathIntegrator, MonteCarloIntegrator);
+MTS_EXPORT_PLUGIN(EmissiveVolumetricPathIntegrator, "Emissive Volumetric Path Tracer integrator");
 NAMESPACE_END(mitsuba)

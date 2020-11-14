@@ -172,10 +172,11 @@ public:
                 masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
 
                 if (any_or<true>(is_spectral)) {
-                    auto [tr, free_flight_pdf] = medium->eval_tr_and_pdf(mi, si, is_spectral);
+                    auto [tr, eps, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, is_spectral);
                     update_weights(p_over_f, free_flight_pdf, tr, channel, is_spectral);
                     update_weights(p_over_f_nee, free_flight_pdf, tr, channel, is_spectral);
                 }
+
                 escaped_medium = active_medium && !mi.is_valid();
                 active_medium &= mi.is_valid();
                 is_spectral &= active_medium;

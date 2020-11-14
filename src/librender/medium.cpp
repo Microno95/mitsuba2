@@ -62,30 +62,42 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
         ENOKI_MARK_USED(channel);
     }
 
+    auto combined_emission = get_emission_coefficient(mi, active);
+    Float m2                = combined_emission[0];
+    if constexpr (is_rgb_v<Spectrum>) { // Handle RGB rendering
+        masked(m2, eq(channel, 1u)) = combined_emission[1];
+        masked(m2, eq(channel, 2u)) = combined_emission[2];
+    } else {
+        ENOKI_MARK_USED(channel);
+    }
+
     Float sampled_t = mint + (-enoki::log(1 - sample) / m);
     Mask valid_mi   = active && (sampled_t <= maxt);
     mi.t            = select(valid_mi, sampled_t, math::Infinity<Float>);
     mi.p            = ray(sampled_t);
     mi.medium       = this;
     mi.mint         = mint;
-    std::tie(mi.sigma_s, mi.sigma_n, mi.sigma_t) =
-        get_scattering_coefficients(mi, valid_mi);
+    std::tie(mi.sigma_s, mi.sigma_n, mi.sigma_t) = get_scattering_coefficients(mi, valid_mi);
+    mi.emissivity          = get_emission_coefficient(mi, valid_mi);
     mi.combined_extinction = combined_extinction;
     return mi;
 }
 
 MTS_VARIANT
-std::pair<typename Medium<Float, Spectrum>::UnpolarizedSpectrum,
-          typename Medium<Float, Spectrum>::UnpolarizedSpectrum>
-Medium<Float, Spectrum>::eval_tr_and_pdf(const MediumInteraction3f &mi,
-                                         const SurfaceInteraction3f &si,
-                                         Mask active) const {
+std::tuple<typename Medium<Float, Spectrum>::UnpolarizedSpectrum,
+           typename Medium<Float, Spectrum>::UnpolarizedSpectrum,
+           typename Medium<Float, Spectrum>::UnpolarizedSpectrum>
+Medium<Float, Spectrum>::eval_tr_eps_and_pdf(const MediumInteraction3f &mi,
+                                             const SurfaceInteraction3f &si,
+                                             Mask active) const {
     MTS_MASKED_FUNCTION(ProfilerPhase::MediumEvaluate, active);
 
-    Float t      = min(mi.t, si.t) - mi.mint;
-    UnpolarizedSpectrum tr  = exp(-t * mi.combined_extinction);
-    UnpolarizedSpectrum pdf = select(si.t < mi.t, tr, tr * mi.combined_extinction);
-    return { tr, pdf };
+    Float t                       = min(mi.t, si.t) - mi.mint;
+    UnpolarizedSpectrum tr        = exp(-t * mi.combined_extinction);
+    UnpolarizedSpectrum eps       = (mi.emissivity / mi.sigma_t) * (1.f - tr);
+    //UnpolarizedSpectrum eps       = mi.emissivity;
+    UnpolarizedSpectrum pdf       = select(si.t < mi.t, tr, tr * mi.combined_extinction);
+    return { tr, eps, pdf };
 }
 
 MTS_IMPLEMENT_CLASS_VARIANT(Medium, Object, "medium")

@@ -28,6 +28,12 @@ public:
     get_scattering_coefficients(const MediumInteraction3f &mi,
                                 Mask active = true) const = 0;
 
+    /// Returns the medium coefficients Sigma_s, Sigma_n and Sigma_t evaluated
+    /// at a given MediumInteraction mi
+    virtual UnpolarizedSpectrum
+    get_emission_coefficient(const MediumInteraction3f &mi,
+                                Mask active = true) const = 0;
+
     /**
      * \brief Sample a free-flight distance in the medium.
      *
@@ -50,9 +56,9 @@ public:
                                            UInt32 channel, Mask active) const;
 
     /**
-     * \brief Compute the transmittance and PDF
+     * \brief Compute the transmittance, emission and PDF
      *
-     * This function evaluates the transmittance and PDF of sampling a certain
+     * This function evaluates the transmittance, emission and PDF of sampling a certain
      * free-flight distance The returned PDF takes into account if a medium
      * interaction occured (mi.t <= si.t) or the ray left the medium (mi.t >
      * si.t)
@@ -64,9 +70,9 @@ public:
      * \return   This method returns a pair of (Transmittance, PDF).
      *
      */
-    std::pair<UnpolarizedSpectrum, UnpolarizedSpectrum>
-    eval_tr_and_pdf(const MediumInteraction3f &mi,
-                    const SurfaceInteraction3f &si, Mask active) const;
+    std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum>
+    eval_tr_eps_and_pdf(const MediumInteraction3f &mi,
+                        const SurfaceInteraction3f &si, Mask active) const;
 
     /// Return the phase function of this medium
     MTS_INLINE const PhaseFunction *phase_function() const {
@@ -84,6 +90,11 @@ public:
         return m_has_spectral_extinction;
     }
 
+    /// Returns whether this medium has emission
+    MTS_INLINE bool has_emission() const {
+        return m_has_emission;
+    }
+
     /// Return a string identifier
     std::string id() const override { return m_id; }
 
@@ -99,7 +110,7 @@ protected:
 
 protected:
     ref<PhaseFunction> m_phase_function;
-    bool m_sample_emitters, m_is_homogeneous, m_has_spectral_extinction;
+    bool m_sample_emitters, m_is_homogeneous, m_has_spectral_extinction, m_has_emission;
 
     /// Identifier (if available)
     std::string m_id;
@@ -119,11 +130,13 @@ ENOKI_CALL_SUPPORT_TEMPLATE_BEGIN(mitsuba::Medium)
     ENOKI_CALL_SUPPORT_METHOD(is_homogeneous)
     ENOKI_CALL_SUPPORT_METHOD(has_spectral_extinction)
     ENOKI_CALL_SUPPORT_METHOD(get_combined_extinction)
+    ENOKI_CALL_SUPPORT_METHOD(get_emission_coefficient)
+    ENOKI_CALL_SUPPORT_METHOD(has_emission)
     ENOKI_CALL_SUPPORT_METHOD(intersect_aabb)
     ENOKI_CALL_SUPPORT_METHOD(sample_interaction)
-    ENOKI_CALL_SUPPORT_METHOD(eval_tr_and_pdf)
+    ENOKI_CALL_SUPPORT_METHOD(eval_tr_eps_and_pdf)
     ENOKI_CALL_SUPPORT_METHOD(get_scattering_coefficients)
-ENOKI_CALL_SUPPORT_TEMPLATE_END(mitsuba::Medium)
+    ENOKI_CALL_SUPPORT_TEMPLATE_END(mitsuba::Medium)
 
 //! @}
 // -----------------------------------------------------------------------
