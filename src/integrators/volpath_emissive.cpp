@@ -111,6 +111,27 @@ public:
 
                 masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
 
+                auto [tr, eps, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, active_medium);
+                Float tr_pdf = index_spectrum(free_flight_pdf, channel);
+                masked(throughput, active_medium) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
+
+                if (any(!enoki::isfinite(throughput))) {
+                    std::ostringstream oss;
+                    oss << "[0] Invalid throughput value: [";
+                    for (uint32_t i = 0; i < array_size_v<Spectrum>; ++i) {
+                        oss << throughput.coeff(i);
+                        if (i + 1 < array_size_v<Spectrum>)
+                            oss << ", ";
+                    }
+                    oss << "]";
+                    Log(Warn, "%s", oss.str());
+                }
+
+                escaped_medium      = active_medium && !mi.is_valid();
+                active_medium      &= mi.is_valid();
+            }
+			
+            if (any_or<true>(active_medium)) {
                 // Handle absorption, null and real scatter events
                 auto medium_sample_eta   = sampler->next_1d(active_medium);
                 Mask absorption_emission_interaction = medium_sample_eta <= (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
@@ -121,90 +142,111 @@ public:
                 act_absorption     |= absorption_emission_interaction && active_medium;
                 act_medium_scatter |= scatter_interaction && active_medium;
                 act_null_scatter   |= null_interaction && active_medium;
+				
+				masked(depth, act_medium_scatter) += 1;
 
-                auto [tr, eps, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, active_medium);
-                Float tr_pdf = index_spectrum(free_flight_pdf, channel);
+				// Dont estimate lighting if we exceeded number of bounces
+				active &= depth < (uint32_t) m_max_depth;
 
                 if (any_or<true>(act_absorption)) {
+                    auto [tr, eps, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, active_medium);
+                    Float tr_pdf = index_spectrum(free_flight_pdf, channel);
                     Float prob_absorption           = (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
                     auto weight_absorption          = ((mi.sigma_t - mi.sigma_s) / prob_absorption);
                     //auto weight_absorption = (mi.sigma_t - mi.sigma_s);
-                    masked(result, act_absorption) += select(tr_pdf > 0.f, throughput * eps * weight_absorption / tr_pdf, 0.f);
+                    masked(result, act_absorption) += select(tr_pdf > 0.f && neq(prob_absorption, 0.f), throughput * eps * weight_absorption / tr_pdf, 0.f);
+
+                    if (any(!enoki::isfinite(result))) {
+                        std::ostringstream oss;
+                        oss << "[1] Invalid result value: [";
+                        for (uint32_t i = 0; i < array_size_v<Spectrum>; ++i) {
+                            oss << result.coeff(i);
+                            if (i + 1 < array_size_v<Spectrum>)
+                                oss << ", ";
+                        }
+                        oss << "]";
+                        Log(Warn, "%s", oss.str());
+                    }
                 }
-                
-                masked(throughput, active_medium) *= tr / tr_pdf;
+				
+				active             &= !act_absorption;
+				act_medium_scatter &= active;
+				act_null_scatter   &= active;
 
-                escaped_medium      = active_medium && !mi.is_valid();
-                active_medium      &= mi.is_valid();
+				if (any_or<true>(act_null_scatter)) {
+					masked(ray.o, act_null_scatter)    = mi.p;
+					masked(ray.mint, act_null_scatter) = 0.f;
+					masked(si.t, act_null_scatter)     = si.t - mi.t;
+					Float prob_null  = index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
+					auto weight_null = (mi.sigma_n / prob_null);
+                    masked(throughput, act_null_scatter) *= select(neq(prob_null, 0.f), weight_null, 0.f);
 
-                act_absorption     &= active_medium;
-                act_medium_scatter &= active_medium;
-                act_null_scatter   &= active_medium;
+                    if (any(!enoki::isfinite(throughput))) {
+                        std::ostringstream oss;
+                        oss << "[2] Invalid throughput value: [";
+                        for (uint32_t i = 0; i < array_size_v<Spectrum>; ++i) {
+                            oss << throughput.coeff(i);
+                            if (i + 1 < array_size_v<Spectrum>)
+                                oss << ", ";
+                        }
+                        oss << "]";
+                        Log(Warn, "%s", oss.str());
+                    }
+				}
+				
+				if (any_or<true>(act_medium_scatter)) {
+					Float prob_scatter  = (index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
+					auto weight_scatter = (mi.sigma_s / prob_scatter);
+                    masked(throughput, act_medium_scatter) *= select(neq(prob_scatter, 0.f), weight_scatter, 0.f);
 
-                /*if (any(select(active, throughput, 0.f) > 1.f)) {
-                    Throw("Throughput is greater than 1.f!");
-                }*/
+                    if (any(!enoki::isfinite(throughput))) {
+                        std::ostringstream oss;
+                        oss << "[3] Invalid throughput value: [";
+                        for (uint32_t i = 0; i < array_size_v<Spectrum>; ++i) {
+                            oss << throughput.coeff(i);
+                            if (i + 1 < array_size_v<Spectrum>)
+                                oss << ", ";
+                        }
+                        oss << "]";
+                        Log(Warn, "%s", oss.str());
+                    }
 
-                if (any_or<true>(act_null_scatter)) {
-                    Float prob_null  = index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
-                    auto weight_null = (mi.sigma_n / prob_null);
-                    //auto weight_null = mi.sigma_n;
-                    masked(throughput, act_null_scatter) *= weight_null;
+					PhaseFunctionContext phase_ctx(sampler);
+					auto phase = mi.medium->phase_function();
 
-                    /*if (any(select(active, throughput, 0.f) > 1.f)) {
-                        Throw("Throughput is greater than 1.f!");
-                    }*/
-                }
+					// --------------------- Emitter sampling ---------------------
+					Mask sample_emitters = mi.medium->use_emitter_sampling();
+					valid_ray |= act_medium_scatter;
+					specular_chain &= !act_medium_scatter;
+					specular_chain |= act_medium_scatter && !sample_emitters;
 
-                masked(depth, act_medium_scatter) += 1;
-            }
+					Mask active_e = act_medium_scatter && sample_emitters;
+					if (any_or<true>(active_e)) {
+						auto [emitted, ds] = sample_emitter(mi, true, scene, sampler, medium, channel, active_e);
+						Float phase_val = phase->eval(phase_ctx, mi, ds.d, active_e);
+						masked(result, active_e) += throughput * phase_val * emitted;
+                        if (any(!enoki::isfinite(result))) {
+                            std::ostringstream oss;
+                            oss << "Invalid result value: [";
+                            for (uint32_t i = 0; i < array_size_v<Spectrum>; ++i) {
+                                oss << result.coeff(i);
+                                if (i + 1 < array_size_v<Spectrum>)
+                                    oss << ", ";
+                            }
+                            oss << "]";
+                            Log(Warn, "%s", oss.str());
+                        }
+					}
 
-            // Dont estimate lighting if we exceeded number of bounces
-            active &= depth < (uint32_t) m_max_depth;
-            active &= !act_absorption;
-            act_medium_scatter &= active;
-            act_null_scatter   &= active;
-
-            if (any_or<true>(act_null_scatter)) {
-                masked(ray.o, act_null_scatter)    = mi.p;
-                masked(ray.mint, act_null_scatter) = 0.f;
-                masked(si.t, act_null_scatter)     = si.t - mi.t;
-            }
-            
-            if (any_or<true>(act_medium_scatter)) {
-                Float prob_scatter  = (index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
-                auto weight_scatter = (mi.sigma_s / prob_scatter);
-                //auto weight_scatter = (mi.sigma_s);
-                masked(throughput, act_medium_scatter) *= weight_scatter;
-
-                /*if (any(select(active, throughput, 0.f) > 1.f)) {
-                    Throw("Throughput is greater than 1.f!");
-                }*/
-
-                PhaseFunctionContext phase_ctx(sampler);
-                auto phase = mi.medium->phase_function();
-
-                // --------------------- Emitter sampling ---------------------
-                Mask sample_emitters = mi.medium->use_emitter_sampling();
-                valid_ray |= act_medium_scatter;
-                specular_chain &= !act_medium_scatter;
-                specular_chain |= act_medium_scatter && !sample_emitters;
-
-                Mask active_e = act_medium_scatter && sample_emitters;
-                if (any_or<true>(active_e)) {
-                    auto [emitted, ds] = sample_emitter(mi, true, scene, sampler, medium, channel, active_e);
-                    Float phase_val = phase->eval(phase_ctx, mi, ds.d, active_e);
-                    masked(result, active_e) += throughput * phase_val * emitted;
-                }
-
-                // ------------------ Phase function sampling -----------------
-                masked(phase, !act_medium_scatter) = nullptr;
-                auto [wo, phase_pdf] = phase->sample(phase_ctx, mi, sampler->next_2d(act_medium_scatter), act_medium_scatter);
-                Ray3f new_ray  = mi.spawn_ray(wo);
-                new_ray.mint = 0.0f;
-                masked(ray, act_medium_scatter) = new_ray;
-                needs_intersection |= act_medium_scatter;
-            }
+					// ------------------ Phase function sampling -----------------
+					masked(phase, !act_medium_scatter) = nullptr;
+					auto [wo, phase_pdf] = phase->sample(phase_ctx, mi, sampler->next_2d(act_medium_scatter), act_medium_scatter);
+					Ray3f new_ray  = mi.spawn_ray(wo);
+					new_ray.mint = 0.0f;
+					masked(ray, act_medium_scatter) = new_ray;
+					needs_intersection |= act_medium_scatter;
+				}
+			}
 
             // --------------------- Surface Interactions ---------------------
             active_surface |= escaped_medium;
@@ -216,8 +258,21 @@ public:
                 // ---------------- Intersection with emitters ----------------
                 EmitterPtr emitter = si.emitter(scene);
                 Mask use_emitter_contribution = active_surface && specular_chain && neq(emitter, nullptr);
-                if (any_or<true>(use_emitter_contribution))
+                if (any_or<true>(use_emitter_contribution)) {
                     masked(result, use_emitter_contribution) += throughput * emitter->eval(si, use_emitter_contribution);
+
+                    if (any(!enoki::isfinite(result))) {
+                        std::ostringstream oss;
+                        oss << "[4] Invalid result value: [";
+                        for (uint32_t i = 0; i < array_size_v<Spectrum>; ++i) {
+                            oss << result.coeff(i);
+                            if (i + 1 < array_size_v<Spectrum>)
+                                oss << ", ";
+                        }
+                        oss << "]";
+                        Log(Warn, "%s", oss.str());
+                    }
+                }
             }
             active_surface &= si.is_valid();
             if (any_or<true>(active_surface)) {
@@ -237,7 +292,19 @@ public:
                     // Determine probability of having sampled that same
                     // direction using BSDF sampling.
                     Float bsdf_pdf = bsdf->pdf(ctx, si, wo, active_e);
-                    result[active_e] += throughput * bsdf_val * mis_weight(ds.pdf, select(ds.delta, 0.f, bsdf_pdf)) * emitted;
+                    masked(result, active_e) += throughput * bsdf_val * mis_weight(ds.pdf, select(ds.delta, 0.f, bsdf_pdf)) * emitted;
+
+                    if (any(!enoki::isfinite(result))) {
+                        std::ostringstream oss;
+                        oss << "[5] Invalid result value: [";
+                        for (uint32_t i = 0; i < array_size_v<Spectrum>; ++i) {
+                            oss << result.coeff(i);
+                            if (i + 1 < array_size_v<Spectrum>)
+                                oss << ", ";
+                        }
+                        oss << "]";
+                        Log(Warn, "%s", oss.str());
+                    }
                 }
 
                 // ----------------------- BSDF sampling ----------------------
@@ -246,6 +313,18 @@ public:
                 bsdf_val = si.to_world_mueller(bsdf_val, -bs.wo, si.wi);
 
                 masked(throughput, active_surface) *= bsdf_val;
+
+                if (any(!enoki::isfinite(throughput))) {
+                    std::ostringstream oss;
+                    oss << "[6] Invalid throughput value: [";
+                    for (uint32_t i = 0; i < array_size_v<Spectrum>; ++i) {
+                        oss << throughput.coeff(i);
+                        if (i + 1 < array_size_v<Spectrum>)
+                            oss << ", ";
+                    }
+                    oss << "]";
+                    Log(Warn, "%s", oss.str());
+                }
 
                 /*if (any(select(active, throughput, 0.f) > 1.f)) {
                     Throw("Throughput is greater than 1.f!");
@@ -279,6 +358,17 @@ public:
                                                                     medium, ray, si_new, channel, add_emitter);
                 result += select(add_emitter && neq(emitter_pdf, 0),
                                 mis_weight(bs.pdf, emitter_pdf) * throughput * emitted, 0.0f);
+                if (any(!enoki::isfinite(result))) {
+                    std::ostringstream oss;
+                    oss << "[7] Invalid result value: [";
+                    for (uint32_t i = 0; i < array_size_v<Spectrum>; ++i) {
+                        oss << result.coeff(i);
+                        if (i + 1 < array_size_v<Spectrum>)
+                            oss << ", ";
+                    }
+                    oss << "]";
+                    Log(Warn, "%s", oss.str());
+                }
 
                 Mask has_medium_trans            = active_surface && si.is_medium_transition();
                 masked(medium, has_medium_trans) = si.target_medium(ray.d);
@@ -342,6 +432,17 @@ public:
                     UnpolarizedSpectrum free_flight_pdf = select(si.t < mi.t || mi.t > remaining_dist, tr, tr * mi.combined_extinction);
                     Float tr_pdf = index_spectrum(free_flight_pdf, channel);
                     masked(transmittance, is_spectral) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
+                    if (any(!enoki::isfinite(transmittance))) {
+                        std::ostringstream oss;
+                        oss << "[5.1] Invalid transmittance value: [";
+                        for (uint32_t i = 0; i < array_size_v<Spectrum>; ++i) {
+                            oss << transmittance.coeff(i);
+                            if (i + 1 < array_size_v<Spectrum>)
+                                oss << ", ";
+                        }
+                        oss << "]";
+                        Log(Warn, "%s", oss.str());
+                    }
                 }
 
                 // Handle exceeding the maximum distance by medium sampling
@@ -359,13 +460,24 @@ public:
                     masked(ray.o, active_medium)    = mi.p;
                     masked(ray.mint, active_medium) = 0.f;
                     masked(si.t, active_medium) = si.t - mi.t;
-                    Float prob_null  = index_spectrum( mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
+                    Float prob_null  = index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
                     auto weight_null = (mi.sigma_n / prob_null);
 
                     if (any_or<true>(is_spectral))
-                        masked(transmittance, is_spectral)  *= select(neq(mi.sigma_n, 0.f), weight_null, 0.f);
+                        masked(transmittance, is_spectral)  *= select(neq(index_spectrum(mi.sigma_n, channel), 0.f), weight_null, 0.f);
                     if (any_or<true>(not_spectral))
                         masked(transmittance, not_spectral) *= mi.sigma_n / mi.combined_extinction;
+                    if (any(!enoki::isfinite(transmittance))) {
+                        std::ostringstream oss;
+                        oss << "[5.2] Invalid transmittance value: [";
+                        for (uint32_t i = 0; i < array_size_v<Spectrum>; ++i) {
+                            oss << transmittance.coeff(i);
+                            if (i + 1 < array_size_v<Spectrum>)
+                                oss << ", ";
+                        }
+                        oss << "]";
+                        Log(Warn, "%s", oss.str());
+                    }
                 }
             }
 
@@ -383,6 +495,17 @@ public:
                 Spectrum bsdf_val = bsdf->eval_null_transmission(si, active_surface);
                 bsdf_val = si.to_world_mueller(bsdf_val, si.wi, si.wi);
                 masked(transmittance, active_surface) *= bsdf_val;
+                if (any(!enoki::isfinite(transmittance))) {
+                    std::ostringstream oss;
+                    oss << "[5.3] Invalid transmittance value: [";
+                    for (uint32_t i = 0; i < array_size_v<Spectrum>; ++i) {
+                        oss << transmittance.coeff(i);
+                        if (i + 1 < array_size_v<Spectrum>)
+                            oss << ", ";
+                    }
+                    oss << "]";
+                    Log(Warn, "%s", oss.str());
+                }
             }
 
             // Update the ray with new origin & t parameter
@@ -452,7 +575,7 @@ public:
                     auto weight_null = (mi.sigma_n / prob_null);
 
                     if (any_or<true>(is_spectral))
-                        masked(transmittance, is_spectral)  *= select(neq(mi.sigma_n, 0.f), weight_null, 0.f);
+                        masked(transmittance, is_spectral)  *= select(neq(index_spectrum(mi.sigma_n, channel), 0.f), weight_null, 0.f);
                     if (any_or<true>(not_spectral))
                         masked(transmittance, not_spectral && active_medium) *= mi.sigma_n / mi.combined_extinction;
                 }
