@@ -7,8 +7,9 @@ add_plugin(aov     aov.cpp)
 add_plugin(stokes  stokes.cpp)
 add_plugin(moment  moment.cpp)
 add_plugin(volpath  volpath.cpp)
-add_plugin(volpath_raymarching  volpath_raymarching.cpp)
 add_plugin(volpath_emissive  volpath_emissive.cpp)
+add_plugin(volpath_raymarching  volpath_raymarching.cpp)
+add_plugin(volpathmis_emissive  volpathmis_emissive.cpp)
 add_plugin(volpathmis volpathmis.cpp)
 
 # Register the test directory
