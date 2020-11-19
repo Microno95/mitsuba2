@@ -150,7 +150,7 @@ public:
             // ----------------------- Sampling the RTE -----------------------
             Mask active_medium  = active && neq(medium, nullptr);
             Mask active_surface = active && !active_medium;
-            Mask act_absorption = false, act_null_scatter = false, act_medium_scatter = false,
+            Mask act_emission = false, act_null_scatter = false, act_medium_scatter = false,
                  escaped_medium = false;
 
             // If the medium does not have a spectrally varying extinction,
@@ -171,11 +171,10 @@ public:
                 }
                 needs_intersection &= !active_medium;
 
-                masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
-				
+                masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;				
 				
 				if (any_or<true>(is_spectral)) {
-				    auto [tr, eps, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, is_spectral);
+				    auto [tr, eps, eps_int, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, is_spectral);
                     update_weights(p_over_f,     free_flight_pdf, tr, channel, is_spectral);
                     update_weights(p_over_f_nee, free_flight_pdf, tr, channel, is_spectral);
                 }
@@ -190,41 +189,44 @@ public:
 				
 				// Handle absorption, null and real scatter events
                 auto medium_sample_eta   = sampler->next_1d(active_medium);
-                Mask absorption_emission_interaction = medium_sample_eta <= (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
-                Mask scatter_interaction = medium_sample_eta < 1 - index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel)
-                                           && medium_sample_eta >= (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
+                Mask emission_interaction = medium_sample_eta <= (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
+                Mask scatter_interaction = medium_sample_eta <= 1 - index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel)
+                                           && medium_sample_eta > (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
                 Mask null_interaction    = medium_sample_eta > 1 - index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
 
-                act_absorption     |= absorption_emission_interaction && active_medium;
-                act_medium_scatter |= scatter_interaction && active_medium;
-                act_null_scatter   |= null_interaction && active_medium;
+                act_emission       |= emission_interaction && active_medium;
+                act_medium_scatter |= scatter_interaction  && active_medium;
+                act_null_scatter   |= null_interaction     && active_medium;
+				
+				if (any_or<true>(act_emission)) {
+                    if (any_or<true>(is_spectral)) {
+                        auto prob_emission =  (mi.sigma_t - mi.sigma_s) / mi.combined_extinction;
+                        auto p_over_f_old = p_over_f, p_over_f_nee_old = p_over_f_nee;
+                        update_weights(p_over_f, prob_emission, (mi.sigma_t - mi.sigma_s), channel, is_spectral && act_emission);
+                        update_weights(p_over_f_nee, 1.f, (mi.sigma_t - mi.sigma_s), channel, is_spectral && act_emission);
+                        masked(result, is_spectral && act_emission) += mis_weight(p_over_f) * mi.radiance;
+                        
+                        masked(p_over_f,     is_spectral && act_emission) = p_over_f_old;
+                        masked(p_over_f_nee, is_spectral && act_emission) = p_over_f_nee_old;
+                    }
+
+                    /*Mask null_scatter   = sampler->next_1d(act_emission) >= index_spectrum(mi.sigma_t, channel) / index_spectrum(mi.combined_extinction, channel);
+                    act_null_scatter   |=  null_scatter && act_emission;
+                    act_medium_scatter |= !act_null_scatter && act_emission;*/
+                }
+
+                active &= !act_emission;
 
                 // Count this as a bounce
                 masked(depth, act_medium_scatter) += 1;
                 masked(last_scatter_event, act_medium_scatter) = mi;
 
-
 				// Dont estimate lighting if we exceeded number of bounces
-				active &= depth < (uint32_t) m_max_depth;
-				
-				if (any_or<true>(act_absorption)) {
-                    if (any_or<true>(is_spectral)) {
-				        auto [tr, eps, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, is_spectral);
-                        auto prob_absorption =  (mi.sigma_t - mi.sigma_s) / mi.combined_extinction;
-                        //WeightMatrix p_over_f_abs = p_over_f;
-                        //update_weights(p_over_f_abs, prob_absorption * free_flight_pdf, (mi.sigma_t - mi.sigma_s), channel, is_spectral && act_absorption);
-                        //masked(result, is_spectral && act_absorption) += mis_weight(p_over_f_abs) * eps;
-                        update_weights(p_over_f, prob_absorption * free_flight_pdf, (mi.sigma_t - mi.sigma_s), channel, is_spectral && act_absorption);
-                        update_weights(p_over_f_nee, 1.f, 0.f, channel, is_spectral && act_absorption);
-                        masked(result, is_spectral && act_absorption) += mis_weight(p_over_f) * eps;
-                    }
+                active &= depth < (uint32_t) m_max_depth;
+                act_medium_scatter &= active && active_medium;
+                act_null_scatter   &= active && active_medium;
+                specular_chain = specular_chain && !act_medium_scatter;
 
-                    active &= !act_absorption;
-                }
-
-                act_medium_scatter &= active;
-                act_null_scatter   &= active;
-                specular_chain = specular_chain && !act_medium_scatter && !act_absorption;
 
                 if (any_or<true>(act_null_scatter)) {
                     if (any_or<true>(is_spectral)) {

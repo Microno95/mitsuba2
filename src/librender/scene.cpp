@@ -249,8 +249,7 @@ Scene<Float, Spectrum>::sample_volume_emitter_direction(const Interaction3f &ref
     if (likely(!m_emissive_mediums.empty())) {
         if (m_emissive_mediums.size() == 1) {
             // Fast path if there is only one emitter
-            ds    = m_emissive_mediums[0]->sample_direction(ref, sample, active);
-            spec *= m_emissive_mediums[0]->pdf_direction(ref, ds, active);
+            ds    = m_emissive_mediums[0]->sample_direction(ref, sample, active);;
         } else {
             ScalarFloat emitter_pdf = 1.f / m_emissive_mediums.size();
 
@@ -267,7 +266,6 @@ Scene<Float, Spectrum>::sample_volume_emitter_direction(const Interaction3f &ref
 
             // Account for the discrete probability of sampling this emitter
             ds.pdf *= emitter_pdf * emitter->pdf_direction(ref, ds, active);
-            spec   *= emitter->pdf_direction(ref, ds, active);
         }
 
         active &= neq(ds.pdf, 0.f);

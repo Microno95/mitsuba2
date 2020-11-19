@@ -28,10 +28,10 @@ public:
     get_scattering_coefficients(const MediumInteraction3f &mi,
                                 Mask active = true) const = 0;
 
-    /// Returns the medium coefficients Sigma_s, Sigma_n and Sigma_t evaluated
+    /// Returns the medium radiant emission evaluated
     /// at a given MediumInteraction mi
     virtual UnpolarizedSpectrum
-    get_emission_coefficient(const MediumInteraction3f &mi,
+    get_radiance(const MediumInteraction3f &mi,
                                 Mask active = true) const = 0;
 
     /**
@@ -56,21 +56,22 @@ public:
                                            UInt32 channel, Mask active) const;
 
     /**
-     * \brief Compute the transmittance, emission and PDF
+     * \brief Compute the transmittance, radiant emission and PDF
      *
-     * This function evaluates the transmittance, emission and PDF of sampling a certain
-     * free-flight distance The returned PDF takes into account if a medium
-     * interaction occured (mi.t <= si.t) or the ray left the medium (mi.t >
-     * si.t)
+     * This function evaluates the transmittance, radiant emission and PDF of 
+     * sampling a certain free-flight distance The returned PDF takes into account
+     * if a medium interaction occured (mi.t <= si.t) or the ray left the medium 
+     * (mi.t > si.t)
      *
      * The evaluated PDF is spectrally varying. This allows to account for the
      * fact that the free-flight distance sampling distribution can depend on
      * the wavelength.
      *
-     * \return   This method returns a pair of (Transmittance, PDF).
+     * \return   This method returns a tuple of 
+     * (Transmittance, Radiant Emission, PDF).
      *
      */
-    std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum>
+    std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum>
     eval_tr_eps_and_pdf(const MediumInteraction3f &mi,
                         const SurfaceInteraction3f &si, Mask active) const;
 
@@ -130,7 +131,7 @@ ENOKI_CALL_SUPPORT_TEMPLATE_BEGIN(mitsuba::Medium)
     ENOKI_CALL_SUPPORT_METHOD(is_homogeneous)
     ENOKI_CALL_SUPPORT_METHOD(has_spectral_extinction)
     ENOKI_CALL_SUPPORT_METHOD(get_combined_extinction)
-    ENOKI_CALL_SUPPORT_METHOD(get_emission_coefficient)
+    ENOKI_CALL_SUPPORT_METHOD(get_radiance)
     ENOKI_CALL_SUPPORT_METHOD(has_emission)
     ENOKI_CALL_SUPPORT_METHOD(intersect_aabb)
     ENOKI_CALL_SUPPORT_METHOD(sample_interaction)

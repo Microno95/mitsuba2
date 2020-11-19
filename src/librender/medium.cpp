@@ -62,11 +62,11 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
         ENOKI_MARK_USED(channel);
     }
 
-    auto combined_emission = get_emission_coefficient(mi, active);
-    Float m2                = combined_emission[0];
+    auto radiant_emission = get_radiance(mi, active);
+    Float m2                = radiant_emission[0];
     if constexpr (is_rgb_v<Spectrum>) { // Handle RGB rendering
-        masked(m2, eq(channel, 1u)) = combined_emission[1];
-        masked(m2, eq(channel, 2u)) = combined_emission[2];
+        masked(m2, eq(channel, 1u)) = radiant_emission[1];
+        masked(m2, eq(channel, 2u)) = radiant_emission[2];
     } else {
         ENOKI_MARK_USED(channel);
     }
@@ -78,13 +78,14 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
     mi.medium       = this;
     mi.mint         = mint;
     std::tie(mi.sigma_s, mi.sigma_n, mi.sigma_t) = get_scattering_coefficients(mi, valid_mi);
-    mi.emissivity          = get_emission_coefficient(mi, valid_mi);
+    mi.radiance            = get_radiance(mi, valid_mi);
     mi.combined_extinction = combined_extinction;
     return mi;
 }
 
 MTS_VARIANT
 std::tuple<typename Medium<Float, Spectrum>::UnpolarizedSpectrum,
+           typename Medium<Float, Spectrum>::UnpolarizedSpectrum,
            typename Medium<Float, Spectrum>::UnpolarizedSpectrum,
            typename Medium<Float, Spectrum>::UnpolarizedSpectrum>
 Medium<Float, Spectrum>::eval_tr_eps_and_pdf(const MediumInteraction3f &mi,
@@ -94,10 +95,10 @@ Medium<Float, Spectrum>::eval_tr_eps_and_pdf(const MediumInteraction3f &mi,
 
     Float t                       = min(mi.t, si.t) - mi.mint;
     UnpolarizedSpectrum tr        = exp(-t * mi.combined_extinction);
-    //UnpolarizedSpectrum eps       = (mi.emissivity / mi.combined_extinction) * (1.f - tr);
-    UnpolarizedSpectrum eps       = mi.emissivity;
+    UnpolarizedSpectrum eps_int   = (mi.radiance / mi.combined_extinction) * (1.f - tr);
+    UnpolarizedSpectrum eps       = mi.radiance;
     UnpolarizedSpectrum pdf       = select(si.t < mi.t, tr, tr * mi.combined_extinction);
-    return { tr, eps, pdf };
+    return { tr, eps, eps_int, pdf };
 }
 
 MTS_IMPLEMENT_CLASS_VARIANT(Medium, Object, "medium")
