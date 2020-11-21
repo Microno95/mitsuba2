@@ -21,6 +21,7 @@ public:
                      Medium, MediumPtr, PhaseFunctionContext)
 
     EmissiveVolumetricPathIntegrator(const Properties &props) : Base(props) {
+
     }
 
     MTS_INLINE
@@ -36,15 +37,20 @@ public:
     }
 
     MTS_INLINE std::tuple<Float, Float, Float, Float>
-    medium_probabilities_max(const Spectrum &sigma_a, const Spectrum &sigma_s,
-                             const Spectrum &sigma_n) const {
-        Float prob_a, prob_s, prob_n;
-        uint32_t n_channels = array_size_v<Spectrum>;
+    medium_probabilities_max(const Spectrum &sigma_a, 
+                             const Spectrum &sigma_s,
+                             const Spectrum &sigma_n,
+                             const Spectrum &throughput) const {
+        Float prob_a = 0.f, prob_s = 0.f, prob_n = 0.f;
+        /*uint32_t n_channels = array_size_v<Spectrum>;
         for (uint32_t idx = 0; idx < n_channels; ++idx) {
             masked(prob_a, prob_a < sigma_a[idx]) = abs(sigma_a[idx]);
             masked(prob_s, prob_s < sigma_s[idx]) = abs(sigma_s[idx]);
             masked(prob_n, prob_n < sigma_n[idx]) = abs(sigma_n[idx]);
-        }
+        }*/
+        prob_a = hmax(abs(sigma_a * throughput));
+        prob_s = hmax(abs(sigma_s * throughput));
+        prob_n = hmax(abs(sigma_n * throughput));
         return { prob_a, prob_s, prob_n, prob_a + prob_s + prob_n };
     }
 
@@ -53,15 +59,28 @@ public:
                                  const Spectrum &sigma_s, 
                                  const Spectrum &sigma_n,
                                  const Spectrum &throughput) const {
-        Float prob_a, prob_s, prob_n;
-        uint32_t n_channels = array_size_v<Spectrum>;
+        Float prob_a = 0.f, prob_s = 0.f, prob_n = 0.f;
+        /*uint32_t n_channels = array_size_v<Spectrum>;
         for (uint32_t idx = 0; idx < n_channels; ++idx) {
-            prob_a += abs(sigma_a[idx] * throughput[idx]);
-            prob_s += abs(sigma_s[idx] * throughput[idx]);
-            prob_n += abs(sigma_n[idx] * throughput[idx]);
-        }
+            prob_a += abs(sigma_a[idx] * throughput[idx]) / n_channels;
+            prob_s += abs(sigma_s[idx] * throughput[idx]) / n_channels;
+            prob_n += abs(sigma_n[idx] * throughput[idx]) / n_channels;
+        }*/
+        prob_a = hmean(abs(sigma_a * throughput));
+        prob_s = hmean(abs(sigma_s * throughput));
+        prob_n = hmean(abs(sigma_n * throughput));
         return {prob_a, prob_s, prob_n, prob_a + prob_s + prob_n} ;
     }
+
+    //MTS_INLINE 
+    //Float max_channel_pdf(const Spectrum &sigma_t_bar, const Float &t) const {
+    //    Spectrum running_best_extinction(0.f);
+    //    uint32_t n_channels = array_size_v<Spectrum>;
+    //    for (uint32_t idx = 0; idx < n_channels; ++idx) {
+    //        masked(running_best_extinction, running_best_extinction < sigma_t_bar[idx]) = sigma_t_bar[idx];
+    //    }
+    //    return exp(-t * running_best_extinction);
+    //}
 
     std::pair<Spectrum, Mask> sample(const Scene *scene,
                                      Sampler *sampler,
@@ -81,7 +100,7 @@ public:
         // Tracks radiance scaling due to index of refraction changes
         Float eta(1.f);
 
-        Spectrum throughput(1.f), result(0.f);
+        Spectrum throughput(1.f), result(0.f), prev_throughput(1.f);
         MediumPtr medium = initial_medium;
         MediumInteraction3f mi = zero<MediumInteraction3f>();
         mi.t = math::Infinity<Float>;
@@ -104,19 +123,11 @@ public:
             // solid angle compression at refractive index boundaries. Stop with at least some
             // probability to avoid  getting stuck (e.g. due to total internal reflection)
 
-            /*if (any(select(active, throughput, 0.f) > 1.f)) {
-                Throw("Throughput is greater than 1.f!");
-            }*/
-
             active &= any(neq(depolarize(throughput), 0.f));
             Float q = min(hmax(depolarize(throughput)) * sqr(eta), .95f);
             Mask perform_rr = (depth > (uint32_t) m_rr_depth);
             active &= sampler->next_1d(active) < q || !perform_rr;
             masked(throughput, perform_rr) *= rcp(detach(q));
-
-            /*if (any(select(active, throughput, 0.f) > 1.f)) {
-                Throw("Throughput is greater than 1.f!");
-            }*/
 
             Mask exceeded_max_depth = depth >= (uint32_t) m_max_depth;
             if (none(active) || all(exceeded_max_depth))
@@ -139,8 +150,11 @@ public:
 
                 masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
 
-                auto [tr, eps, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, active_medium);
+                auto [tr, eps, eps_int, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, active_medium);
                 Float tr_pdf = index_spectrum(free_flight_pdf, channel);
+                //auto tr_pdf = free_flight_pdf;
+                //Float tr_pdf = max_channel_pdf(mi.combined_extinction, min(mi.t, si.t) - mi.mint);
+                prev_throughput = throughput;
                 masked(throughput, active_medium) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
 
                 escaped_medium      = active_medium && !mi.is_valid();
@@ -149,42 +163,52 @@ public:
 			
             if (any_or<true>(active_medium)) {
                 // Compute emmission, scatter and null event probabilities
-                /*Float prob_emission           = (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
-				Float prob_scatter  = (index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
-				Float prob_null  = index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);*/
+                Float prob_emission, prob_scatter, prob_null, c = 1.f;
+                /*prob_emission = (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
+				prob_scatter  =  index_spectrum(mi.sigma_s, channel) / index_spectrum(mi.combined_extinction, channel);
+				prob_null     =  index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);*/
+
+                //std::tie(prob_emission, prob_scatter, prob_null, c) = medium_probabilities_max(mi.sigma_t - mi.sigma_s, mi.sigma_s, mi.sigma_n, prev_throughput);
+                std::tie(prob_emission, prob_scatter, prob_null, c) = medium_probabilities_average(mi.sigma_t - mi.sigma_s, mi.sigma_s, mi.sigma_n, prev_throughput);
+
+                prob_emission /= c;
+                prob_scatter  /= c;
+                prob_null     /= c;
 
                 // Handle absorption, null and real scatter events
                 auto medium_sample_eta   = sampler->next_1d(active_medium);
 
-
                 Mask emission_interaction = medium_sample_eta <= prob_emission;
-                Mask scatter_interaction  = medium_sample_eta < 1 - prob_null && medium_sample_eta > prob_emission;
-                Mask null_interaction     = medium_sample_eta >= 1 - prob_null;
+                Mask scatter_interaction  = (medium_sample_eta <= 1 - prob_null) & !emission_interaction;
+                Mask null_interaction     = medium_sample_eta > 1 - prob_null;
 
-                act_emission     |= emission_interaction && active_medium;
+                act_emission       |= emission_interaction && active_medium;
                 act_medium_scatter |= scatter_interaction && active_medium;
                 act_null_scatter   |= null_interaction && active_medium;
 				
-				masked(depth, act_medium_scatter && act_emission) += 1;
+				masked(depth, act_medium_scatter) += 1;
 
 				// Dont estimate lighting if we exceeded number of bounces
 				active &= depth < (uint32_t) m_max_depth;
 
                 if (any_or<true>(act_emission)) {
                     auto weight_emission          = ((mi.sigma_t - mi.sigma_s) / prob_emission);
-                    masked(result, act_emission) += select(neq(prob_emission, 0.f), weight_emission * throughput * eps, 0.f);
-                    active &= !act_emission;
+                    masked(result, act_emission) += select(neq(prob_emission, 0.f), weight_emission * throughput * mi.radiance, 0.f);
                 }
+
+                active &= !act_emission;
 				
 				act_medium_scatter &= active;
 				act_null_scatter   &= active;
 
 				if (any_or<true>(act_null_scatter)) {
+					auto weight_null = (mi.sigma_n / prob_null);
+                    masked(throughput, act_null_scatter) *= select(neq(prob_null, 0.f), weight_null, 0.f);
+
+                    // Move the ray along
 					masked(ray.o, act_null_scatter)    = mi.p;
 					masked(ray.mint, act_null_scatter) = 0.f;
 					masked(si.t, act_null_scatter)     = si.t - mi.t;
-					auto weight_null = (mi.sigma_n / prob_null);
-                    masked(throughput, act_null_scatter) *= select(neq(prob_null, 0.f), weight_null, 0.f);
 				}
 				
 				if (any_or<true>(act_medium_scatter)) {
@@ -304,7 +328,7 @@ public:
     sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction, const Scene *scene,
                           Sampler *sampler, MediumPtr medium, UInt32 channel, Mask active) const {
         using EmitterPtr = replace_scalar_t<Float, const Emitter *>;
-        Spectrum transmittance(1.0f);
+        Spectrum transmittance(1.0f), prev_transmittance(1.0f);
 
         auto [ds, emitter_val] = scene->sample_emitter_direction(ref_interaction, sampler->next_2d(active), false, active);
         masked(emitter_val, eq(ds.pdf, 0.f)) = 0.f;
@@ -349,6 +373,8 @@ public:
                     UnpolarizedSpectrum tr  = exp(-t * mi.combined_extinction);
                     UnpolarizedSpectrum free_flight_pdf = select(si.t < mi.t || mi.t > remaining_dist, tr, tr * mi.combined_extinction);
                     Float tr_pdf = index_spectrum(free_flight_pdf, channel);
+                    //auto tr_pdf = free_flight_pdf;
+                    prev_transmittance = transmittance;
                     masked(transmittance, is_spectral) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
                 }
 
@@ -367,13 +393,15 @@ public:
                     masked(ray.o, active_medium)    = mi.p;
                     masked(ray.mint, active_medium) = 0.f;
                     masked(si.t, active_medium) = si.t - mi.t;
-                    Float prob_null  = index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
-                    auto weight_null = (mi.sigma_n / prob_null);
+                    Float prob_emission, prob_scatter, prob_null, c;
+                    
+                    std::tie(prob_emission, prob_scatter, prob_null, c) = medium_probabilities_average(mi.sigma_t - mi.sigma_s, mi.sigma_s, mi.sigma_n, prev_transmittance);
 
-                    if (any_or<true>(is_spectral))
-                        masked(transmittance, is_spectral)  *= select(neq(index_spectrum(mi.sigma_n, channel), 0.f), weight_null, 0.f);
-                    if (any_or<true>(not_spectral))
-                        masked(transmittance, not_spectral) *= mi.sigma_n / mi.combined_extinction;
+                    prob_null /= c;
+
+				    //prob_null =  index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
+                    auto weight_null = select(prob_null > 0.f, (mi.sigma_n / prob_null), 0.f);
+                    masked(transmittance, active_medium) *= weight_null;
                 }
             }
 
@@ -423,7 +451,7 @@ public:
         // Assumes the ray was alread intersected to compute si_ray before calling this method
         Mask needs_intersection = false;
 
-        Spectrum transmittance(1.0f);
+        Spectrum transmittance(1.0f), prev_transmittance(1.0f);
         Float emitter_pdf(0.0f);
         SurfaceInteraction3f si = si_ray;
         while (any(active)) {
@@ -443,8 +471,11 @@ public:
                 Mask is_spectral = medium->has_spectral_extinction() && active_medium;
                 Mask not_spectral = !is_spectral && active_medium;
                 if (any_or<true>(is_spectral)) {
-                    auto [tr, eps, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, is_spectral);
+                    auto [tr, eps, eps_int, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, is_spectral);
                     Float tr_pdf = index_spectrum(free_flight_pdf, channel);
+                    //auto tr_pdf = free_flight_pdf;
+                    //Float tr_pdf = max_channel_pdf(mi.combined_extinction);
+                    prev_transmittance = transmittance;
                     masked(transmittance, is_spectral) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
                 }
 
@@ -456,13 +487,15 @@ public:
                     masked(ray.o, active_medium)    = mi.p;
                     masked(ray.mint, active_medium) = 0.f;
                     masked(si.t, active_medium) = si.t - mi.t;
-                    Float prob_null  = index_spectrum( mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
-                    auto weight_null = (mi.sigma_n / prob_null);
+                    Float prob_emission, prob_scatter, prob_null, c;
+                    
+                    std::tie(prob_emission, prob_scatter, prob_null, c) = medium_probabilities_average(mi.sigma_t - mi.sigma_s, mi.sigma_s, mi.sigma_n, prev_transmittance);
 
-                    if (any_or<true>(is_spectral))
-                        masked(transmittance, is_spectral)  *= select(neq(index_spectrum(mi.sigma_n, channel), 0.f), weight_null, 0.f);
-                    if (any_or<true>(not_spectral))
-                        masked(transmittance, not_spectral && active_medium) *= mi.sigma_n / mi.combined_extinction;
+                    prob_null /= c;
+
+				    //prob_null =  index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
+                    auto weight_null = select(prob_null > 0.f, (mi.sigma_n / prob_null), 0.f);
+                    masked(transmittance, active_medium) *= weight_null;
                 }
             }
 
