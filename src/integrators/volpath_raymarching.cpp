@@ -189,14 +189,33 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
             needs_intersection &= !active_medium;
 
             masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
+            
+            auto total_dist2 = min(mi.t, si.t) - mi.mint;
+            Float current_dist = 0.f;
+            auto orig_p = mi.p;
+            Mask iteration_mask = current_dist < total_dist2 && active_medium && total_dist2 < math::Infinity<Float> && total_dist2 == total_dist2;
 
-            auto dt = min(mi.t, si.t) - mi.mint;
-            auto tr = exp(-dt * mi.sigma_t);
-            masked(result, active_medium)     += select(mi.sigma_t > 0.f, (mi.sigma_t - mi.sigma_s) * throughput * (mi.radiance/ mi.sigma_t) * (1.f - tr), 0.f);
-            masked(throughput, active_medium) *= tr;
+            while (any(iteration_mask)) {
+                auto dt = min(m_volume_step_size, total_dist2 - current_dist) + math::ShadowEpsilon<Float>;
+                current_dist += dt;
+                /*std::ostringstream oss;
+                oss << "[main volume transport]" << iteration_mask << ", " << dt << ", " << current_dist << ", " << total_dist2 << ", " << mi.t << ", " << si.t;
+                Log(Warn, "%s", oss.str());*/
+                mi.p = ray(current_dist + mi.mint);
+                auto [local_ss, local_sn, local_st] = medium->get_scattering_coefficients(mi, iteration_mask);
+                auto local_radiance = medium->get_radiance(mi, iteration_mask);
+                auto tr = exp(-dt * local_st);
+                masked(result, iteration_mask)     += select(local_st > 0.f, (local_st - local_ss) * throughput * (local_radiance / local_st) * (1.f - tr), 0.f);
+                masked(throughput, iteration_mask) *= tr;
+                iteration_mask &= current_dist < (total_dist2 - math::ShadowEpsilon<Float>);
+            }
 
-            escaped_medium = active_medium && !mi.is_valid();
-            active_medium &= mi.is_valid() && active;
+            masked(throughput, active_medium && !(total_dist2 < math::Infinity<Float> && total_dist2 == total_dist2)) *= 0.f;
+
+            mi.p = orig_p;
+
+            escaped_medium = active_medium && !iteration_mask;
+            active_medium &= iteration_mask;
         }
 
         //if (any_or<true>(act_medium_scatter)) {
@@ -353,17 +372,37 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
             masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
             needs_intersection &= !active_medium;
 
-            Float dt = min(remaining_dist, min(mi.t, si.t)) - mi.mint;
-            masked(transmittance, active_medium) *= exp(-dt * mi.sigma_t);
+            auto total_dist2 = min(mi.t, si.t) - mi.mint;
+            Float current_dist = 0.f;
+            auto orig_p = mi.p;
+            Mask iteration_mask = current_dist < total_dist2 && active_medium && total_dist2 < math::Infinity<Float> && total_dist2 == total_dist2;
+
+            while (any(iteration_mask)) {
+                auto dt = min(m_volume_step_size, total_dist2 - current_dist) + math::ShadowEpsilon<Float>;
+                current_dist += dt;
+                /*std::ostringstream oss;
+                oss << "[emitter sampling transport]" << iteration_mask << ", " << dt << ", " << current_dist << ", " << total_dist2 << ", " << mi.t << ", " << si.t;
+                Log(Warn, "%s", oss.str());*/
+                mi.p = ray(current_dist + mi.mint);
+                auto [local_ss, local_sn, local_st] = medium->get_scattering_coefficients(mi, iteration_mask);
+                auto local_radiance = medium->get_radiance(mi, iteration_mask);
+                auto tr = exp(-dt * local_st);
+                masked(transmittance, iteration_mask) *= tr;
+                iteration_mask &= current_dist < (total_dist2 - math::ShadowEpsilon<Float>);
+            }
+
+            masked(transmittance, active_medium && !(total_dist2 < math::Infinity<Float> && total_dist2 == total_dist2)) *= 0.f;
 
             // Handle exceeding the maximum distance by medium sampling
             masked(total_dist, active_medium && (mi.t > remaining_dist) && mi.is_valid()) = ds.dist;
             masked(mi.t, active_medium && (mi.t > remaining_dist)) = math::Infinity<Float>;
 
-            masked(total_dist, active_medium) += mi.mint + dt;
+            masked(total_dist, active_medium) += mi.t;
 
-            escaped_medium = active_medium && !mi.is_valid();
-            active_medium &= mi.is_valid();
+            mi.p = orig_p;
+
+            escaped_medium = active_medium && !iteration_mask;
+            active_medium &= iteration_mask;
         }
 
         // Handle interactions with surfaces
@@ -429,13 +468,34 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
                 masked(si, intersect) = scene->ray_intersect(ray, intersect);
 
             masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
-            Float dt = min(mi.t, si.t) - mi.mint;
+            
+            auto total_dist2 = min(mi.t, si.t) - mi.mint;
+            Float current_dist = 0.f;
+            auto orig_p = mi.p;
+            Mask iteration_mask = current_dist < total_dist2 && active_medium && total_dist2 < math::Infinity<Float> && total_dist2 == total_dist2;
 
-            masked(transmittance, active_medium) *= exp(-dt * mi.sigma_t);
+            while (any(iteration_mask)) {
+                auto dt = min(m_volume_step_size, total_dist2 - current_dist) + math::ShadowEpsilon<Float>;
+                current_dist += dt;
+                /*std::ostringstream oss;
+                oss << "[direct sampling transport]" << iteration_mask << ", " << dt << ", " << current_dist << ", " << total_dist2 << ", " << mi.t << ", " << si.t;
+                Log(Warn, "%s", oss.str());*/
+                mi.p = ray(current_dist + mi.mint);
+                auto [local_ss, local_sn, local_st] = medium->get_scattering_coefficients(mi, iteration_mask);
+                auto local_radiance = medium->get_radiance(mi, iteration_mask);
+                auto tr = exp(-dt * local_st);
+                masked(transmittance, iteration_mask) *= tr;
+                iteration_mask &= current_dist < (total_dist2 - math::ShadowEpsilon<Float>);
+            }
+
+            masked(transmittance, active_medium && !(total_dist2 < math::Infinity<Float> && total_dist2 == total_dist2)) *= 0.f;
 
             needs_intersection &= !active_medium;
-            escaped_medium = active_medium && !mi.is_valid();
-            active_medium &= mi.is_valid();
+
+            mi.p = orig_p;
+
+            escaped_medium = active_medium && !iteration_mask;
+            active_medium &= iteration_mask;
         }
 
         // Handle interactions with surfaces
