@@ -194,6 +194,9 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
             Float current_dist = 0.f;
             auto orig_p = mi.p;
             Mask iteration_mask = current_dist < total_dist2 && active_medium && total_dist2 < math::Infinity<Float> && total_dist2 == total_dist2;
+            /*std::ostringstream oss;
+            oss << "[init main volume transport]" << iteration_mask << ", " << total_dist2 << ", " << mi.t << ", " << si.t << ", " << mi.mint;
+            Log(Warn, "%s", oss.str());*/
 
             while (any(iteration_mask)) {
                 auto dt = min(m_volume_step_size, total_dist2 - current_dist) + math::ShadowEpsilon<Float>;
@@ -376,6 +379,9 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
             Float current_dist = 0.f;
             auto orig_p = mi.p;
             Mask iteration_mask = current_dist < total_dist2 && active_medium && total_dist2 < math::Infinity<Float> && total_dist2 == total_dist2;
+            /*std::ostringstream oss;
+            oss << "[init emitter sampling transport]" << iteration_mask << ", " << total_dist2 << ", " << mi.t << ", " << si.t << ", " << mi.mint;
+            Log(Warn, "%s", oss.str());*/
 
             while (any(iteration_mask)) {
                 auto dt = min(m_volume_step_size, total_dist2 - current_dist) + math::ShadowEpsilon<Float>;
@@ -473,6 +479,9 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
             Float current_dist = 0.f;
             auto orig_p = mi.p;
             Mask iteration_mask = current_dist < total_dist2 && active_medium && total_dist2 < math::Infinity<Float> && total_dist2 == total_dist2;
+            /*std::ostringstream oss;
+            oss << "[init direct sampling transport]" << iteration_mask << ", " << total_dist2 << ", " << mi.t << ", " << si.t << ", " << mi.mint;
+            Log(Warn, "%s", oss.str());*/
 
             while (any(iteration_mask)) {
                 auto dt = min(m_volume_step_size, total_dist2 - current_dist) + math::ShadowEpsilon<Float>;

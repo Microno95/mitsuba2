@@ -164,12 +164,12 @@ public:
             if (any_or<true>(active_medium)) {
                 // Compute emmission, scatter and null event probabilities
                 Float prob_emission, prob_scatter, prob_null, c = 1.f;
-                /*prob_emission = (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
+                prob_emission = (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
 				prob_scatter  =  index_spectrum(mi.sigma_s, channel) / index_spectrum(mi.combined_extinction, channel);
-				prob_null     =  index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);*/
+				prob_null     =  index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
 
                 //std::tie(prob_emission, prob_scatter, prob_null, c) = medium_probabilities_max(mi.sigma_t - mi.sigma_s, mi.sigma_s, mi.sigma_n, prev_throughput);
-                std::tie(prob_emission, prob_scatter, prob_null, c) = medium_probabilities_average(mi.sigma_t - mi.sigma_s, mi.sigma_s, mi.sigma_n, prev_throughput);
+                //std::tie(prob_emission, prob_scatter, prob_null, c) = medium_probabilities_average(mi.sigma_t - mi.sigma_s, mi.sigma_s, mi.sigma_n, prev_throughput);
 
                 prob_emission /= c;
                 prob_scatter  /= c;
@@ -200,6 +200,8 @@ public:
 				
 				act_medium_scatter &= active;
 				act_null_scatter   &= active;
+
+                masked(throughput, act_medium_scatter | act_null_scatter) *= 1 / (1 - prob_emission);
 
 				if (any_or<true>(act_null_scatter)) {
 					auto weight_null = (mi.sigma_n / prob_null);
