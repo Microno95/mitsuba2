@@ -24,6 +24,7 @@ enum class ProfilerPhase : int {
     SamplingIntegratorSample,   /* SamplingIntegrator::sample() */
     SampleEmitterRay,           /* Scene::sample_emitter_ray() */
     SampleEmitterDirection,     /* Scene::sample_emitter_direction() */
+    MediumRaymarch,             /* Scene::Medium::Raymarching */
     RayTest,                    /* Scene::ray_test() */
     RayIntersect,               /* Scene::ray_intersect() */
     CreateSurfaceInteraction,   /* KDTree::create_surface_interaction() */
@@ -55,6 +56,7 @@ constexpr const char
         "Scene::sample_emitter_direction()",
         "Scene::ray_test()",
         "Scene::ray_intersect()",
+        "Scene::Medium::Raymarching",
         "KDTree::create_surface_interaction()",
         "ImageBlock::put()",
         "BSDF::eval(), pdf()",

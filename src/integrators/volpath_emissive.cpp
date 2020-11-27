@@ -174,8 +174,8 @@ public:
                 masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
 
                 auto [tr, eps, eps_int, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, active_medium);
-                //Float tr_pdf = index_spectrum(free_flight_pdf, channel);
-                Float tr_pdf = hmin(free_flight_pdf);
+                Float tr_pdf = index_spectrum(free_flight_pdf, channel);
+                //Float tr_pdf = hmean(free_flight_pdf);
                 prev_throughput = throughput;
                 masked(throughput, active_medium) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
 
@@ -400,8 +400,7 @@ public:
                     Float t      = min(remaining_dist, min(mi.t, si.t)) - mi.mint;
                     UnpolarizedSpectrum tr  = exp(-t * mi.combined_extinction);
                     UnpolarizedSpectrum free_flight_pdf = select(si.t < mi.t || mi.t > remaining_dist, tr, tr * mi.combined_extinction);
-                    //Float tr_pdf = index_spectrum(free_flight_pdf, channel);
-                    Float tr_pdf       = hmin(free_flight_pdf);
+                    Float tr_pdf = index_spectrum(free_flight_pdf, channel);
                     prev_transmittance = transmittance;
                     masked(transmittance, is_spectral) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
                 }
@@ -508,8 +507,8 @@ public:
                 Mask not_spectral = !is_spectral && active_medium;
                 if (any_or<true>(is_spectral)) {
                     auto [tr, eps, eps_int, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, is_spectral);
-                    //Float tr_pdf = index_spectrum(free_flight_pdf, channel);
-                    Float tr_pdf       = hmin(free_flight_pdf);
+                    Float tr_pdf = index_spectrum(free_flight_pdf, channel);
+                    //Float tr_pdf       = hmin(free_flight_pdf);
                     prev_transmittance = transmittance;
                     masked(transmittance, is_spectral) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
                 }

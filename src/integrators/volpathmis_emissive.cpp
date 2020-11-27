@@ -206,7 +206,13 @@ public:
                         update_weights(p_over_f, prob_emission, (mi.sigma_t - mi.sigma_s), channel, is_spectral && act_emission);
                         update_weights(p_over_f_nee, 1.f, (mi.sigma_t - mi.sigma_s), channel, is_spectral && act_emission);
                         masked(result, is_spectral && act_emission) += mis_weight(p_over_f) * mi.radiance;
-                        
+                        /*update_weights(p_over_f_old, (mi.sigma_n / mi.combined_extinction) * (1 - mi.sigma_t / mi.combined_extinction), mi.sigma_n, channel, is_spectral && act_emission);
+                        update_weights(p_over_f_nee_old, (1 - mi.sigma_t / mi.combined_extinction), mi.sigma_n, channel, is_spectral && act_emission);
+
+                        masked(ray.o, act_emission)    = mi.p;
+                        masked(ray.mint, act_emission) = 0.f;
+                        masked(si.t, act_emission)     = si.t - mi.t;*/
+
                         masked(p_over_f,     is_spectral && act_emission) = p_over_f_old;
                         masked(p_over_f_nee, is_spectral && act_emission) = p_over_f_nee_old;
                     }
@@ -229,15 +235,14 @@ public:
                 act_null_scatter   &= active && active_medium;
                 specular_chain = specular_chain && !(act_medium_scatter && sample_emitters);
 
-
                 if (any_or<true>(act_null_scatter)) {
                     if (any_or<true>(is_spectral)) {
                         update_weights(p_over_f, mi.sigma_n / mi.combined_extinction, mi.sigma_n, channel, is_spectral && act_null_scatter);
                         update_weights(p_over_f_nee, 1.0f, mi.sigma_n, channel, is_spectral && act_null_scatter);
                     }
                     if (any_or<true>(not_spectral)) {
-                       update_weights(p_over_f, mi.sigma_n / mi.combined_extinction, mi.sigma_n, channel, not_spectral && act_null_scatter);
-                       update_weights(p_over_f_nee, 1.0f, mi.sigma_n, channel, not_spectral && act_null_scatter);
+                       update_weights(p_over_f, mi.sigma_n, mi.sigma_n, channel, not_spectral && act_null_scatter);
+                       update_weights(p_over_f_nee, 1.0f, mi.sigma_n / mi.combined_extinction, channel, not_spectral && act_null_scatter);
                     }
 
                     masked(ray.o, act_null_scatter) = mi.p;
@@ -249,7 +254,7 @@ public:
                     if (any_or<true>(is_spectral))
                         update_weights(p_over_f, mi.sigma_s / mi.combined_extinction, mi.sigma_s, channel, is_spectral && act_medium_scatter);
                     if (any_or<true>(not_spectral))
-                        update_weights(p_over_f, mi.sigma_s / mi.combined_extinction, mi.sigma_s, channel, not_spectral && act_medium_scatter);
+                        update_weights(p_over_f, mi.sigma_s, mi.sigma_s, channel, not_spectral && act_medium_scatter);
 
                     PhaseFunctionContext phase_ctx(sampler);
                     auto phase = mi.medium->phase_function();
