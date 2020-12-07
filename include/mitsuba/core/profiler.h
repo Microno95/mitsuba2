@@ -24,7 +24,6 @@ enum class ProfilerPhase : int {
     SamplingIntegratorSample,   /* SamplingIntegrator::sample() */
     SampleEmitterRay,           /* Scene::sample_emitter_ray() */
     SampleEmitterDirection,     /* Scene::sample_emitter_direction() */
-    MediumRaymarch,             /* Scene::Medium::Raymarching */
     RayTest,                    /* Scene::ray_test() */
     RayIntersect,               /* Scene::ray_intersect() */
     CreateSurfaceInteraction,   /* KDTree::create_surface_interaction() */
@@ -40,6 +39,7 @@ enum class ProfilerPhase : int {
     EndpointSampleDirection,    /* Endpoint::sample_direction() */
     TextureSample,              /* Texture::sample() */
     TextureEvaluate,            /* Texture::eval() and Texture::pdf() */
+    MediumRaymarch,             /* Scene::Medium::Raymarching */
 
     ProfilerPhaseCount
 };
@@ -56,7 +56,6 @@ constexpr const char
         "Scene::sample_emitter_direction()",
         "Scene::ray_test()",
         "Scene::ray_intersect()",
-        "Scene::Medium::Raymarching",
         "KDTree::create_surface_interaction()",
         "ImageBlock::put()",
         "BSDF::eval(), pdf()",
@@ -69,7 +68,8 @@ constexpr const char
         "Endpoint::sample_ray()",
         "Endpoint::sample_direction()",
         "Texture::sample()",
-        "Texture::eval()"
+        "Texture::eval()",
+        "Scene::Medium::Raymarching"
     };
 
 

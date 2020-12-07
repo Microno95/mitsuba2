@@ -233,23 +233,26 @@ Scene<Float, Spectrum>::pdf_emitter_direction(const Interaction3f &ref,
     }
 }
 
-MTS_VARIANT std::pair<typename Scene<Float, Spectrum>::DirectionSample3f, Spectrum>
+MTS_VARIANT std::tuple<typename Scene<Float, Spectrum>::DirectionSample3f, Spectrum, typename Scene<Float, Spectrum>::MediumPtr>
 Scene<Float, Spectrum>::sample_volume_emitter_direction(const Interaction3f &ref,
                                                         const Point2f &sample_,
                                                         bool test_visibility,
                                                         Mask active) const {
     MTS_MASKED_FUNCTION(ProfilerPhase::SampleEmitterDirection, active);
 
-    using ShapePtr = replace_scalar_t<Float, Shape*>;
+    using ShapePtr = replace_scalar_t<Float, const Shape*>;
+    using MediumPtr = replace_scalar_t<Float, const Medium *>;
 
     Point2f sample(sample_);
     DirectionSample3f ds;
     Spectrum spec(0.f);
+    MediumPtr sampled_medium = nullptr;
 
     if (likely(!m_emissive_mediums.empty())) {
         if (m_emissive_mediums.size() == 1) {
             // Fast path if there is only one emitter
             ds    = m_emissive_mediums[0]->sample_direction(ref, sample, active);;
+            sampled_medium = m_emissive_mediums[0]->interior_medium();
         } else {
             ScalarFloat emitter_pdf = 1.f / m_emissive_mediums.size();
 
@@ -266,6 +269,7 @@ Scene<Float, Spectrum>::sample_volume_emitter_direction(const Interaction3f &ref
 
             // Account for the discrete probability of sampling this emitter
             ds.pdf *= emitter_pdf * emitter->pdf_direction(ref, ds, active);
+            sampled_medium = m_emissive_mediums[index]->interior_medium();
         }
 
         active &= neq(ds.pdf, 0.f);
@@ -281,9 +285,10 @@ Scene<Float, Spectrum>::sample_volume_emitter_direction(const Interaction3f &ref
     } else {
         ds   = zero<DirectionSample3f>();
         spec = 0.f;
+        sampled_medium = nullptr;
     }
 
-    return { ds, spec };
+    return { ds, spec, sampled_medium };
 }
 
 MTS_VARIANT Float Scene<Float, Spectrum>::pdf_volume_emitter_direction(const Interaction3f &ref, 

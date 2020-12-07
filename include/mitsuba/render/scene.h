@@ -158,7 +158,7 @@ public:
      *    Radiance received along the sampled ray divided by the sample
      *    probability.
      */
-    std::pair<DirectionSample3f, Spectrum>
+    std::tuple<DirectionSample3f, Spectrum, MediumPtr>
     sample_volume_emitter_direction(const Interaction3f &ref, 
                                     const Point2f &sample,
                                     bool test_visibility = true,
