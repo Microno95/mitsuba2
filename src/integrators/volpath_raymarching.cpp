@@ -21,7 +21,7 @@ MTS_IMPORT_TYPES(Scene, Sampler, Emitter, EmitterPtr, BSDF, BSDFPtr,
                     Medium, MediumPtr, PhaseFunctionContext)
 
 RaymarchingPathIntegrator(const Properties &props) : Base(props) {
-    m_volume_step_size = props.float_("volume_step_size", 1.0f);
+    m_volume_step_size = props.float_("volume_step_size", 0.1f);
 }
 
 MTS_INLINE
@@ -63,15 +63,6 @@ MediumInteraction3f sample_raymarched_interaction(const Ray3f &ray,
     if constexpr (is_rgb_v<Spectrum>) { // Handle RGB rendering
         masked(m, eq(channel, 1u)) = combined_extinction[1];
         masked(m, eq(channel, 2u)) = combined_extinction[2];
-    } else {
-        ENOKI_MARK_USED(channel);
-    }
-
-    auto radiant_emission = medium->get_radiance(mi, active);
-    Float m2              = radiant_emission[0];
-    if constexpr (is_rgb_v<Spectrum>) { // Handle RGB rendering
-        masked(m2, eq(channel, 1u)) = radiant_emission[1];
-        masked(m2, eq(channel, 2u)) = radiant_emission[2];
     } else {
         ENOKI_MARK_USED(channel);
     }
@@ -162,14 +153,15 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
             // Get maximum flight distance of ray
             // If there is a surface then we should target that instead of the throughput limit
             Float max_flight_distance     = min(si.t, mi.maxt) - mi.mint;
-            Float current_flight_distance   = 0.f, dt = m_volume_step_size;
+            Float current_flight_distance = 0.f;
+            Float dt                      = m_volume_step_size;
 
             // Instantiate masks that track which rays are able to continue marching
             Mask optical_depth_exceeded = active_medium;
-            Mask iteration_mask = current_flight_distance < max_flight_distance && current_flight_distance < mi.maxt && optical_depth_exceeded && neq(max_flight_distance, math::Infinity<Float>);
+            Mask iteration_mask = current_flight_distance < max_flight_distance && optical_depth_exceeded && neq(max_flight_distance, math::Infinity<Float>);
 
             // Instantiate tracking of optical depth, this will be used to estimate throughput
-            Spectrum optical_depth(0.f);
+            Spectrum optical_depth(0.f), optical_step(0.f), tr(1.0f);
 
             // Create variables for local interaction parameters
             auto [local_ss, local_sn, local_st] = medium->get_scattering_coefficients(mi, iteration_mask);
@@ -181,48 +173,52 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 Log(Debug, "%s", oss.str());
             }
 
-            while (any(iteration_mask)) {
+            {
                 MTS_MASKED_FUNCTION(ProfilerPhase::MediumRaymarch, iteration_mask);
-                // Determine initial step size
-                auto dt = min(m_volume_step_size, max_flight_distance - current_flight_distance);
+                while (any(iteration_mask)) {
+                    // Determine step size
+                    // If the medium is homogeneous, we can just skip ahead
+                    masked(dt, iteration_mask) = max_flight_distance - current_flight_distance;
+                    masked(dt, iteration_mask && !medium->is_homogeneous()) = min(dt, m_volume_step_size);
                 
-                // For marching rays, sampled point after moving by dt
-                masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
-                std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                local_radiance = medium->get_radiance(mi, iteration_mask);
+                    // For marching rays, sample point after moving by dt
+                    masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
+                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
+                    local_radiance = medium->get_radiance(mi, iteration_mask);
 
-                Mask optical_depth_needs_correction = false;
-                Spectrum radiance_correction = 1.0f;
-                if (any(local_ss > 0.0)) {
-                    // If step exceeds throughput, correct travel distance only if we are not arriving at a surface
-                    optical_depth_needs_correction = index_spectrum(optical_depth + dt * local_st, channel) > -enoki::log(max_throughput) && (dt < max_flight_distance - current_flight_distance);
-                    masked(dt, optical_depth_needs_correction && index_spectrum(local_st, channel) > 0.f) = -(enoki::log(max_throughput) + index_spectrum(optical_depth, channel)) / index_spectrum(local_st, channel);
+                    Mask optical_depth_needs_correction = false;
+                    Spectrum radiance_correction = 1.0f;
+                    if (any(local_ss > 0.0)) {
+                        // If step exceeds throughput, correct travel distance only if we are not arriving at a surface
+                        optical_depth_needs_correction = index_spectrum(optical_depth + dt * local_st, channel) > -enoki::log(max_throughput) && (dt < max_flight_distance - current_flight_distance);
+                        masked(dt, optical_depth_needs_correction && index_spectrum(local_st, channel) > 0.f) = -(enoki::log(max_throughput) + index_spectrum(optical_depth, channel)) / index_spectrum(local_st, channel);
+                    }
+
+                    optical_step = dt * local_st;
+                    masked(current_flight_distance, iteration_mask)  += dt;
+
+                    // Sample new points
+                    masked(mi.p, optical_depth_needs_correction) = ray(current_flight_distance + mi.mint);
+                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
+                    local_radiance = medium->get_radiance(mi, iteration_mask);
+
+                    // Add radiance via integration assuming homogeneity, for sufficiently small steps this will be more correct
+                    tr = exp(-optical_step);
+                    if (any(local_ss > 0.0)) {
+                        masked(radiance_correction, optical_depth_needs_correction) *= select(local_st > 0.f && optical_step > 0.f, 1.0 / (local_st * tr * exp(-optical_depth)), 0.f);
+                    }
+                    masked(result, iteration_mask) += select(local_st > 0.f && optical_step > 0.f, (local_st - local_ss) * exp(-optical_depth) * throughput * (local_radiance / local_st) * (1.f - tr) * radiance_correction, 0.f);
+
+                    masked(optical_depth, iteration_mask) += optical_step;
+
+                    // Update iteration mask
+                    // Marching should end when either throughput falls below sampled throughput or we exceed distance to the surface
+                    iteration_mask &= (current_flight_distance < max_flight_distance - math::RayEpsilon<Float>) && !optical_depth_needs_correction;
                 }
-                auto optical_step = dt * local_st;
-                
-                masked(current_flight_distance, iteration_mask)  += dt;
-
-                // Sample new points
-                masked(mi.p, optical_depth_needs_correction) = ray(current_flight_distance + mi.mint);
-                std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                local_radiance = medium->get_radiance(mi, iteration_mask);
-
-                // Add radiance via integration assuming homogeneity, for sufficiently small steps this will be more correct
-                auto tr = exp(-optical_step);
-                if (any(local_ss > 0.0)) {
-                    masked(radiance_correction, optical_depth_needs_correction) *= select(local_st > 0.f, 1.0 / (local_st * tr * exp(-optical_depth)), 0.f);
-                }
-                masked(result, iteration_mask) += select(local_st > 0.f, (local_st - local_ss) * exp(-optical_depth) * throughput * (local_radiance / local_st) * (1.f - tr) * radiance_correction, 0.f);
-
-                masked(optical_depth, iteration_mask) += optical_step;
-
-                // Update iteration mask
-                // Marching should end when either throughput falls below sampled throughput or we exceed distance to the surface
-                iteration_mask &= (current_flight_distance < max_flight_distance - math::RayEpsilon<Float>) && !optical_depth_needs_correction;
             }
 
             masked(mi.t, active_medium) = current_flight_distance + mi.mint;
-            masked(mi.t, mi.t > mi.maxt || mi.t > si.t - math::RayEpsilon<Float>) = math::Infinity<Float>;
+            masked(mi.t, mi.t > mi.maxt || mi.t > si.t - math::RayEpsilon<Float> || max_flight_distance <= 0.f) = math::Infinity<Float>;
             
             masked(throughput, active_medium) *= exp(-optical_depth);
             masked(throughput, eq(max_flight_distance, math::Infinity<Float>)) *= 0.f;
@@ -236,10 +232,10 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
             masked(ray.mint, active_medium) = 0.f;
             masked(si.t, active_medium)     = si.t - mi.t;
 
-            act_medium_scatter |= active_medium;
+            //act_medium_scatter |= active_medium;
 
-            masked(depth, act_medium_scatter) += 1;
-            masked(throughput, act_medium_scatter) *= select(local_st > 0.f, local_ss / (exp(-optical_depth) * index_spectrum(local_st, channel)), 0.f);
+            //masked(depth, act_medium_scatter) += 1;
+            //masked(throughput, act_medium_scatter) *= select(local_st > 0.f, local_ss / (exp(-optical_depth) * index_spectrum(local_st, channel)), 0.f);
 
             {
                 std::ostringstream oss;
@@ -252,31 +248,31 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
         active &= depth < (uint32_t) m_max_depth;
         active_medium &= active;
 
-        if (any_or<true>(act_medium_scatter)) {
-            PhaseFunctionContext phase_ctx(sampler);
-            auto phase = mi.medium->phase_function();
+        //if (any_or<true>(act_medium_scatter)) {
+        //    PhaseFunctionContext phase_ctx(sampler);
+        //    auto phase = mi.medium->phase_function();
 
-            // --------------------- Emitter sampling ---------------------
-            Mask sample_emitters = mi.medium->use_emitter_sampling();
-            valid_ray |= act_medium_scatter;
-            specular_chain &= !act_medium_scatter;
-            specular_chain |= act_medium_scatter && !sample_emitters;
+        //    // --------------------- Emitter sampling ---------------------
+        //    Mask sample_emitters = mi.medium->use_emitter_sampling();
+        //    valid_ray |= act_medium_scatter;
+        //    specular_chain &= !act_medium_scatter;
+        //    specular_chain |= act_medium_scatter && !sample_emitters;
 
-            Mask active_e = act_medium_scatter && sample_emitters;
-            if (any_or<true>(active_e)) {
-                auto [emitted, ds] = sample_emitter(mi, true, scene, sampler, medium, channel, active_e);
-                Float phase_val = phase->eval(phase_ctx, mi, ds.d, active_e);
-                masked(result, active_e) += throughput * phase_val * emitted;
-            }
+        //    Mask active_e = act_medium_scatter && sample_emitters;
+        //    if (any_or<true>(active_e)) {
+        //        auto [emitted, ds] = sample_emitter(mi, true, scene, sampler, medium, channel, active_e);
+        //        Float phase_val = phase->eval(phase_ctx, mi, ds.d, active_e);
+        //        masked(result, active_e) += throughput * phase_val * emitted;
+        //    }
 
-            // ------------------ Phase function sampling -----------------
-            masked(phase, !act_medium_scatter) = nullptr;
-            auto [wo, phase_pdf] = phase->sample(phase_ctx, mi, sampler->next_2d(act_medium_scatter), act_medium_scatter);
-            Ray3f new_ray  = mi.spawn_ray(wo);
-            new_ray.mint = 0.0f;
-            masked(ray, act_medium_scatter) = new_ray;
-            needs_intersection |= act_medium_scatter;
-        }
+        //    // ------------------ Phase function sampling -----------------
+        //    masked(phase, !act_medium_scatter) = nullptr;
+        //    auto [wo, phase_pdf] = phase->sample(phase_ctx, mi, sampler->next_2d(act_medium_scatter), act_medium_scatter);
+        //    Ray3f new_ray  = mi.spawn_ray(wo);
+        //    new_ray.mint = 0.0f;
+        //    masked(ray, act_medium_scatter) = new_ray;
+        //    needs_intersection |= act_medium_scatter;
+        //}
 
         // --------------------- Surface Interactions ---------------------
         active_surface |= escaped_medium;
@@ -407,7 +403,8 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
             // Get maximum flight distance of ray
             // If there is a surface then we should target that instead of the throughput limit
             Float max_flight_distance     = min(remaining_dist, min(si.t, mi.maxt)) - mi.mint;
-            Float current_flight_distance = 0.f, dt = m_volume_step_size;
+            Float current_flight_distance = 0.f;
+            Float dt = m_volume_step_size;
 
             // Instantiate masks that track which rays are able to continue marching
             Mask iteration_mask = current_flight_distance < max_flight_distance && current_flight_distance < mi.maxt && neq(max_flight_distance, math::Infinity<Float>);
@@ -420,37 +417,39 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
 
             {
                 std::ostringstream oss;
-                oss << "[emitter sampling transport init]: " << iteration_mask << ", " << max_flight_distance << ", " << current_flight_distance << ", " << mi.t << ", " << si.t << ", " << mi.mint << ", " << mi.maxt;
+                oss << "[emitter sampling transport init]: " << iteration_mask << ", " << remaining_dist << ", " << max_flight_distance << ", " << current_flight_distance << ", " << mi.t << ", " << si.t << ", " << mi.mint << ", " << mi.maxt;
                 Log(Debug, "%s", oss.str());
             }
 
-
-            while (any(iteration_mask)) {
+            {
                 MTS_MASKED_FUNCTION(ProfilerPhase::MediumRaymarch, iteration_mask);
-                // Determine initial step size
-                auto dt = min(m_volume_step_size, max_flight_distance - current_flight_distance);
+                while (any(iteration_mask)) {
+                    // Determine step size
+                    // If the medium is homogeneous, we can just skip ahead
+                    masked(dt, iteration_mask) = max_flight_distance - current_flight_distance;
+                    masked(dt, iteration_mask && !medium->is_homogeneous()) = min(dt, m_volume_step_size);
                 
-                // For marching rays, sampled point after moving by dt
-                masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
-                std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                auto optical_step = dt * local_st;
+                    // For marching rays, sampled point after moving by dt
+                    masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
+                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
                 
-                masked(current_flight_distance, iteration_mask) += dt;
-                masked(optical_depth, iteration_mask) += optical_step;
+                    masked(current_flight_distance, iteration_mask) += dt;
+                    masked(optical_depth, iteration_mask) += dt * local_st;
 
-                {
-                    std::ostringstream oss;
-                    oss << "[emitter sampling transport iter]: " << dt << ", " << optical_depth << ", " << current_flight_distance;
-                    Log(Debug, "%s", oss.str());
+                    /*{
+                        std::ostringstream oss;
+                        oss << "[emitter sampling transport iter]: " << dt << ", " << optical_depth << ", " << current_flight_distance;
+                        Log(Debug, "%s", oss.str());
+                    }*/
+
+                    // Update iteration mask
+                    // Marching should end when either throughput falls below sampled throughput or we exceed distance to the surface
+                    iteration_mask &= (current_flight_distance < max_flight_distance - math::RayEpsilon<Float>);
                 }
-
-                // Update iteration mask
-                // Marching should end when either throughput falls below sampled throughput or we exceed distance to the surface
-                iteration_mask &= (current_flight_distance < max_flight_distance - math::RayEpsilon<Float>);
             }
             
             masked(mi.t, active_medium) = current_flight_distance + mi.mint;
-            masked(mi.t, mi.t > mi.maxt || mi.t > min(si.t, remaining_dist) - math::RayEpsilon<Float>) = math::Infinity<Float>;
+            masked(mi.t, mi.t > mi.maxt || mi.t > min(si.t, remaining_dist) - math::RayEpsilon<Float> || max_flight_distance <= 0.f) = math::Infinity<Float>;
 
             {
                 std::ostringstream oss;
@@ -469,6 +468,10 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
             active_medium &= mi.is_valid();
 
             masked(total_dist, active_medium) += mi.t;
+
+            masked(ray.o, active_medium)    = ray(current_flight_distance + mi.mint);
+            masked(ray.mint, active_medium) = 0.f;
+            masked(si.t, active_medium)     = si.t - mi.t;
         }
 
         // Handle interactions with surfaces
@@ -538,7 +541,8 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
             // Get maximum flight distance of ray
             // If there is a surface then we should target that instead of the throughput limit
             Float max_flight_distance     = min(si.t, mi.maxt) - mi.mint;
-            Float current_flight_distance = 0.f, dt = m_volume_step_size;
+            Float current_flight_distance = 0.f;
+            Float dt = m_volume_step_size;
 
             // Instantiate masks that track which rays are able to continue marching
             Mask iteration_mask = current_flight_distance < max_flight_distance && current_flight_distance < mi.maxt && neq(max_flight_distance, math::Infinity<Float>);
@@ -554,27 +558,30 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
                 oss << "[direct sampling transport init]: " << iteration_mask << ", " << max_flight_distance << ", " << current_flight_distance << ", " << mi.t << ", " << si.t << ", " << mi.mint << ", " << mi.maxt;
                 Log(Debug, "%s", oss.str());
             }
-
-            while (any(iteration_mask)) {
+            
+            {
                 MTS_MASKED_FUNCTION(ProfilerPhase::MediumRaymarch, iteration_mask);
-                // Determine initial step size
-                auto dt = min(m_volume_step_size, max_flight_distance - current_flight_distance);
+                while (any(iteration_mask)) {
+                    // Determine the step size
+                    // If the medium is homogeneous, we can just skip ahead
+                    masked(dt, iteration_mask) = max_flight_distance - current_flight_distance;
+                    masked(dt, iteration_mask && !medium->is_homogeneous()) = min(dt, m_volume_step_size);
                 
-                // For marching rays, sampled point after moving by dt
-                masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
-                std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                auto optical_step = dt * local_st;
+                    // For marching rays, sampled point after moving by dt
+                    masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
+                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
                 
-                masked(current_flight_distance, iteration_mask)  += dt;
-                masked(optical_depth, iteration_mask) += optical_step;
+                    masked(current_flight_distance, iteration_mask)  += dt;
+                    masked(optical_depth, iteration_mask) += dt * local_st;
 
-                // Update iteration mask
-                // Marching should end when either throughput falls below sampled throughput or we exceed distance to the surface
-                iteration_mask &= (current_flight_distance < max_flight_distance - math::RayEpsilon<Float>);
+                    // Update iteration mask
+                    // Marching should end when either throughput falls below sampled throughput or we exceed distance to the surface
+                    iteration_mask &= (current_flight_distance < max_flight_distance - math::RayEpsilon<Float>);
+                }
             }
 
             masked(mi.t, active_medium) = current_flight_distance + mi.mint;
-            masked(mi.t, mi.t > mi.maxt || mi.t > si.t - math::RayEpsilon<Float>) = math::Infinity<Float>;
+            masked(mi.t, mi.t > mi.maxt || mi.t > si.t - math::RayEpsilon<Float> || max_flight_distance <= 0.f) = math::Infinity<Float>;
 
             {
                 std::ostringstream oss;
@@ -587,6 +594,10 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
             
             escaped_medium = active_medium && !mi.is_valid();
             active_medium &= mi.is_valid();
+
+            masked(ray.o, active_medium)    = ray(current_flight_distance + mi.mint);
+            masked(ray.mint, active_medium) = 0.f;
+            masked(si.t, active_medium)     = si.t - mi.t;
         }
 
         // Handle interactions with surfaces
