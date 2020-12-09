@@ -200,6 +200,12 @@ public:
 
                 if (any_or<true>(act_emission)) {
                     masked(result, act_emission) += weight_emission * throughput * mi.radiance;
+                    masked(throughput, act_emission) *= prob_emission;
+                    
+                    // Move the ray along
+					masked(ray.o, act_emission)    = mi.p;
+					masked(ray.mint, act_emission) = 0.f;
+					masked(si.t, act_emission)     = si.t - mi.t;
                 }
 
                 masked(depth, act_medium_scatter) += 1;
@@ -207,7 +213,7 @@ public:
                 // Dont estimate lighting if we exceeded number of bounces
                 active &= depth < (uint32_t) m_max_depth;
 
-                active &= !act_emission;
+                // active &= !act_emission;
 				
 				act_medium_scatter &= active;
 				act_null_scatter   &= active;

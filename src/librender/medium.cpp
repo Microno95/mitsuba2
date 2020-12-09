@@ -62,16 +62,10 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
         ENOKI_MARK_USED(channel);
     }
 
-    auto radiant_emission = get_radiance(mi, active);
-    Float m2                = radiant_emission[0];
-    if constexpr (is_rgb_v<Spectrum>) { // Handle RGB rendering
-        masked(m2, eq(channel, 1u)) = radiant_emission[1];
-        masked(m2, eq(channel, 2u)) = radiant_emission[2];
-    } else {
-        ENOKI_MARK_USED(channel);
-    }
-
+    // Sampling based on infinite homogeneous medium assumption
     Float sampled_t = mint + (-enoki::log(1 - sample) / m);
+    // Sampling based on finite volume using homogeneous medium assumption
+    //masked(sampled_t, maxt < math::Infinity<Float>) = mint + (-enoki::log(1 - sample * (1.f - exp(-m * maxt)) / m));
     Mask valid_mi   = active && (sampled_t <= maxt);
     mi.t            = select(valid_mi, sampled_t, math::Infinity<Float>);
     mi.p            = ray(sampled_t);
@@ -96,9 +90,11 @@ Medium<Float, Spectrum>::eval_tr_eps_and_pdf(const MediumInteraction3f &mi,
 
     Float t                       = min(mi.t, si.t) - mi.mint;
     UnpolarizedSpectrum tr        = exp(-t * mi.combined_extinction);
+    //UnpolarizedSpectrum bound_tr  = exp(-select(si.t < mi.maxt, si.t, mi.maxt) * mi.combined_extinction);
     UnpolarizedSpectrum eps_int   = (mi.radiance / mi.combined_extinction) * (1.f - tr);
     UnpolarizedSpectrum eps       = mi.radiance;
     UnpolarizedSpectrum pdf       = select(si.t < mi.t, tr, tr * mi.combined_extinction);
+    //masked(pdf, mi.maxt < math::Infinity<Float>) = select(si.t < mi.t, bound_tr / (1 - bound_tr), tr * mi.combined_extinction / (1.0f - bound_tr));
     return { tr, eps, eps_int, pdf };
 }
 
