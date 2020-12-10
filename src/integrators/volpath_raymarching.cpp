@@ -137,8 +137,7 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
         // ----------------------- Sampling the RTE -----------------------
         Mask active_medium  = active && neq(medium, nullptr);
         Mask active_surface = active && !active_medium;
-        Mask act_absorption = false, act_null_scatter = false, 
-				act_medium_scatter = false, escaped_medium = false;
+        Mask act_null_scatter = false, act_medium_scatter = false, escaped_medium = false;
 
         if (any_or<true>(active_medium)) {
             // Get maximum transmission of raymarched ray
@@ -195,8 +194,6 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 local_radiance = medium->get_radiance(mi, iteration_mask);
 
                 masked(optical_step, iteration_mask) = dt * local_st;
-                auto tentative_distance = current_flight_distance;
-                masked(tentative_distance, iteration_mask) += dt;
                 Mask optical_depth_needs_correction = iteration_mask && (index_spectrum(optical_depth + optical_step, channel) > desired_density) && !can_skip_sampling;
 
                 if (any(optical_depth_needs_correction)) {
@@ -479,8 +476,8 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
             }
 
             auto tr = exp(-optical_depth);
-            auto path_pdf = select(mi.t < si.t, tr * local_st, tr);
-            auto tr_pdf   = index_spectrum(path_pdf, channel);
+            // auto path_pdf = select(mi.t < max_flight_distance, tr * local_st, tr);
+            // auto tr_pdf   = index_spectrum(path_pdf, channel);
 
             masked(mi.t, active_medium && mi.t >= max_flight_distance) = math::Infinity<Float>;
             masked(mi.t, active_medium && mi.t >= si.t) = math::Infinity<Float>;
@@ -598,6 +595,7 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
                 oss << "[direct sampling transport init]: " << iteration_mask << ", " << max_flight_distance << ", " << current_flight_distance << ", " << mi.t << ", " << si.t << ", " << mi.mint << ", " << mi.maxt;
                 Log(Debug, "%s", oss.str());
             }
+
             while (any(iteration_mask)) {
                 MTS_MASKED_FUNCTION(ProfilerPhase::MediumRaymarch, iteration_mask);
                 // Determine the step size
@@ -620,8 +618,8 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
             }
 
             auto tr = exp(-optical_depth);
-            auto path_pdf = select(mi.t < si.t, tr * local_st, tr);
-            auto tr_pdf   = index_spectrum(path_pdf, channel);
+            // auto path_pdf = select(mi.t < max_flight_distance, tr * local_st, tr);
+            // auto tr_pdf   = index_spectrum(path_pdf, channel);
 
             masked(mi.t, active_medium && mi.t >= max_flight_distance) = math::Infinity<Float>;
             masked(mi.t, active_medium && mi.t >= si.t) = math::Infinity<Float>;
