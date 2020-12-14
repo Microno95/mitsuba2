@@ -25,7 +25,7 @@ RaymarchingPathIntegrator(const Properties &props) : Base(props) {
     m_stratified_samples = props.int_("stratified_samples", 0);
     m_atol               = props.float_("absolute_tolerance", 1e-5f);
     m_rtol               = props.float_("relative_tolerance", 1e-5f);
-    m_use_rk45           = props.bool_("adaptive_stepping", false);
+    m_use_adaptive_sampling           = props.bool_("adaptive_stepping", false);
 }
 
 MTS_INLINE
@@ -76,6 +76,52 @@ MediumInteraction3f sample_raymarched_interaction(const Ray3f &ray,
     return mi;
 }
 
+std::tuple<Spectrum, Float, Float>
+integration_step(std::function<Spectrum(Float, Mask)>& df, Float dt, Mask active, Mask use_adaptive_sampling) const {
+    if (m_use_adaptive_sampling) {
+        Spectrum a1(0.f), a2(0.f), a3(0.f), a4(0.f), a5(0.f), est1(0.f), est2(0.f);
+        Float err_estimate(0.f), curr_dt(dt), next_dt(dt);
+        Mask step_rejected = true;
+        // --------------------- RK45CK -------------------------- //
+        // In order to accelerate the numerical integration via marching, we can use an adaptive stepping algorithm
+        // We utilise the embedded Runge-Kutta 4(5) method with Cash-Karp coefficients
+        // With this we can find the total optical depth of the ray segment that starts at
+        // current_flight_distance and ends at current_flight_distance + dt
+        // Since the ODE is linear and the right hand side is independent of the dependent variable (optical_depth)
+        // We can simply accumulate the results of each segment as we step through them
+        //
+        // There is no 'a0' as the optical depth of a segment of length 0 is 0
+        while (any(step_rejected)) {
+            masked(a1, active && step_rejected) = df(0.2f   * curr_dt, active && step_rejected);
+            masked(a2, active && step_rejected) = df(0.3f   * curr_dt, active && step_rejected);
+            masked(a3, active && step_rejected) = df(0.6f   * curr_dt, active && step_rejected);
+            masked(a4, active && step_rejected) = df(1.0f   * curr_dt, active && step_rejected);
+            masked(a5, active && step_rejected) = df(0.875f * curr_dt, active && step_rejected);
+
+            // 4th order estimate of optical_step
+            masked(est1, active && step_rejected) = curr_dt * (0.40257648953301128f * a2 + 0.21043771043771045f * a3 + 0.28910220214568039f * a5);
+            // 5th order estimate of optical_step
+            masked(est2, active && step_rejected) = curr_dt * (0.38390790343915343f * a2 + 0.24459273726851852f * a3 + 0.01932198660714286f * a4 + 0.25000000000000000f * a5);
+
+            // Error estimate from difference between 5th and 4th order estimates
+            masked(err_estimate, active && step_rejected) = hmax(abs(detach(est2) - detach(est1)));
+            // Based on scipy scaling of error
+            auto scale = m_atol + max(hmax(abs(detach(est1))), hmax(abs(detach(est2)))) * m_rtol;
+            auto error_norm = err_estimate / scale;
+
+            Float corr = select(err_estimate > 0.f, 0.8f * enoki::pow(error_norm, -0.20f), 1.25f);
+
+            masked(next_dt, active && step_rejected) = max(100.0f * math::RayEpsilon<Float>, 0.8f * curr_dt * min(10.f, max(0.2f, corr)));
+            step_rejected &= (use_adaptive_sampling && (error_norm >= 1.0f) && (next_dt >= 200.0f * math::RayEpsilon<Float>)) && (next_dt < curr_dt);
+            masked(curr_dt, active && step_rejected) = next_dt;
+        }
+        return std::make_tuple(est2, curr_dt, next_dt);
+    } else {
+        
+        return std::make_tuple(dt * (df(0.f * dt, active) + df(dt, active)) * 0.5f, dt, dt);
+    }
+}
+
 std::pair<Spectrum, Mask> sample(const Scene *scene,
                                     Sampler *sampler,
                                     const RayDifferential3f &ray_,
@@ -98,7 +144,7 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
     MediumPtr medium = initial_medium;
     MediumInteraction3f mi = zero<MediumInteraction3f>();
     mi.t = math::Infinity<Float>;
-    Mask specular_chain = active && !m_hide_emitters;
+    Mask specular_chain = active && !m_hide_emitters, use_adaptive_sampling = m_use_adaptive_sampling;
     UInt32 depth = 0;
 
     UInt32 channel = 0;
@@ -157,176 +203,109 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
             // UInt32 pdf_correction_exp     = 0;
             Float current_flight_distance = max(mi.t - mi.mint, 0.f);
             Float dt                      = m_volume_step_size;
-            Float next_dt                 = math::Infinity<Float>;
 
             // Instantiate masks that track which rays are able to continue marching
             Mask iteration_mask = active_medium;
             masked(mi.t, eq(max_flight_distance, math::Infinity<Float>)) = math::Infinity<Float>;
             iteration_mask &= mi.is_valid() && current_flight_distance < max_flight_distance;
             Mask reached_density = false;
-            Mask can_skip_sampling = active_medium;
 
             // Instantiate tracking of optical depth, this will be used to estimate throughput
-            Spectrum optical_depth(0.f), optical_step(0.f), tr(1.0f);
+            Spectrum optical_depth(0.f), optical_step(0.f), tr(1.0f), total_radiance(0.f);
 
             // Create variables for local interaction parameters
             auto [local_ss, local_sn, local_st] = medium->get_scattering_coefficients(mi, iteration_mask);
             Spectrum local_radiance = medium->get_radiance(mi, iteration_mask);
-            can_skip_sampling &= medium->is_homogeneous() && !any(local_ss > 0.f);
 
             // Initialise step size
             // For inhomogeneous media we will use RK45 to do the integration
             // If the medium is homogeneous, we can just skip ahead
             masked(dt, iteration_mask) = max_flight_distance - current_flight_distance;
+            // masked(dt, iteration_mask) = min(dt, m_volume_step_size*sampler->next_1d(iteration_mask));
             masked(dt, iteration_mask && !medium->is_homogeneous()) = min(dt, m_volume_step_size*sampler->next_1d(iteration_mask));
             // We need to terminate the ray at an earlier point if the medium is scattering
-            masked(dt, iteration_mask &&  medium->is_homogeneous() && !can_skip_sampling) = min(dt, desired_density / index_spectrum(local_st, channel));
+            masked(dt, iteration_mask &&  medium->is_homogeneous()) = min(dt, desired_density / index_spectrum(local_st, channel));
+            // Skip integration for homogeneous media
+            masked(current_flight_distance, iteration_mask) += dt;
+            masked(optical_depth, iteration_mask) += dt * local_st;
+            masked(mi.t, iteration_mask) += dt;
+            masked(mi.p, iteration_mask) = ray(current_flight_distance + mi.mint);
+            iteration_mask &= !medium->is_homogeneous();
 
             // RK45 parameters
-            //     Optical Depth
-            Spectrum a1(0.f), a2(0.f), a3(0.f), a4(0.f), a5(0.f), est1(0.f), est2(0.f);
-            Float err_estimate(0.f);
+            //     Optical Depth Function
+            std::function<Spectrum(Float, Mask)> df_opt = [&ray, &mi, &medium, &current_flight_distance](Float dt_in, Mask active) {
+                masked(mi.p, active) = ray(current_flight_distance + dt_in + mi.mint);
+                auto [local_ss, local_sn, local_st] = medium->get_scattering_coefficients(mi, active);
+                return local_st;
+            };
+            //     Radiance Function
+            std::function<Spectrum(Float, Mask)> df_rad = [&ray, &mi, &medium, &current_flight_distance](Float dt_in, Mask active) {
+                masked(mi.p, active) = ray(current_flight_distance + dt_in + mi.mint);
+                auto [local_ss, local_sn, local_st] = medium->get_scattering_coefficients(mi, active);
+                Spectrum local_radiance = medium->get_radiance(mi, active);
+                return select(local_st > 0.f, (local_radiance / local_st) * (local_st - local_ss) * (1.f - exp(-dt_in * local_st)), 0.f);
+            };
 
             // {
             //     std::ostringstream oss;
-            //     oss << "[main volume transport init]: " << desired_density << ", " << iteration_mask << ", " << max_flight_distance << ", " << current_flight_distance << ", " << mi.t << ", " << si.t << ", " << mi.mint << ", " << mi.maxt;
+            //     oss << "[main volume transport init]: " << dt << ", " << desired_density << ", " << iteration_mask << ", " << max_flight_distance << ", " << current_flight_distance << ", " << mi.t << ", " << si.t << ", " << mi.mint << ", " << mi.maxt;
             //     Log(Debug, "%s", oss.str());
             // }
 
             while (any(iteration_mask)) {
                 MTS_MASKED_FUNCTION(ProfilerPhase::MediumRaymarch, iteration_mask);
             
-                if (m_use_rk45) {
-                    // --------------------- RK45CK -------------------------- //
-                    // In order to accelerate the numerical integration via marching, we can use an adaptive stepping algorithm
-                    // We utilise the embedded Runge-Kutta 4(5) method with Cash-Karp coefficients
-                    // With this we can find the total optical depth of the ray segment that starts at
-                    // current_flight_distance and ends at current_flight_distance + dt
-                    // Since the ODE is linear and the right hand side is independent of the dependent variable (optical_depth)
-                    // We can simply accumulate the results of each segment as we step through them
-                    //
-                    // There is no 'a0' as the optical depth of a segment of length 0 is 0
-                    masked(est1, iteration_mask) *= 0.f;
-                    masked(est2, iteration_mask) *= 0.f;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.2f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a1, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.3f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a2, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.6f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a3, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.875f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a5, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a4, iteration_mask) = local_st;
-
-                    // 4th order estimate of optical_step
-                    masked(est1, iteration_mask) = dt * (0.40257648953301128f * a2 + 0.21043771043771045f * a3 + 0.28910220214568039f * a5);
-                    // 5th order estimate of optical_step
-                    masked(est2, iteration_mask) = dt * (0.38390790343915343f * a2 + 0.24459273726851852f * a3 + 0.01932198660714286f * a4 + 0.25000000000000000f * a5);
-
-                    // Error estimate from difference between 5th and 4th order estimates
-                    masked(err_estimate, iteration_mask) = hmax(abs(detach(est2) - detach(est1)));
-                    // Based on scipy scaling of error
-                    auto scale = m_atol + max(hmax(abs(detach(est1))), hmax(abs(detach(est2)))) * m_rtol;
-
-                    Float corr = select(err_estimate > 0.f, 0.8f * enoki::pow(err_estimate / scale, -0.20f), 10.0f);
-
-                    masked(next_dt, iteration_mask && !medium->is_homogeneous()) = max(100.0f * math::RayEpsilon<Float>, 0.9f * dt * min(10.f, max(0.2f, corr)));
-
-                    // {
-                    //     std::ostringstream oss;
-                    //     oss << "[main volume transport rk45]: " << dt * local_st << ", " << est1 << ", " << est2 << ", " << next_dt << ", " << dt << std::endl;
-                    //     oss << "[main volume transport rk45 - coeffs]: " << a1 << ", " << a2 << ", " << a3 << ", " << a4 << ", " << a5;
-                    //     Log(Debug, "%s", oss.str());
-                    // }
-
-                    masked(optical_step, iteration_mask) = select(medium->is_homogeneous(), dt * local_st, est2);
-                    // ------------------------------------------------------- //
-                } else {
-                    // --------------------- Fixed Step Integration----------- //
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(optical_step, iteration_mask) = dt * local_st;
-                    // ------------------------------------------------------- //
-                }
+                auto [next_depth, curr_dt, next_dt] = integration_step(df_opt, dt, iteration_mask, use_adaptive_sampling);
+                // auto [next_depth, curr_dt, next_dt] = integration_step(df_opt, dt, iteration_mask, use_adaptive_sampling);
+                masked(optical_step, iteration_mask) = next_depth;
 
                 // --------------------- Correction ---------------------- //
                 // Check if we exceed the desired density by taking this step
                 // If we do, find the point between this point and the last point that reaches the desired density
                 // The desired density and the obtained density may differ since we sample the density at the point we interpolate to
                 // And if the step size is larger than 2x the mean grid spacing then this can be quite different
-                // Mask can_skip_this_step = iteration_mask && hmax(local_ss) == 0.f && (index_spectrum(optical_depth + optical_step, channel) > desired_density);
-                // masked(max_throughput, can_skip_this_step) *= sampler->next_1d(can_skip_this_step);
-                // masked(desired_density, can_skip_this_step) = -enoki::log(max_throughput);
-                // masked(pdf_correction_exp, can_skip_this_step) += 1;
-                Mask optical_depth_needs_correction = iteration_mask && (index_spectrum(optical_depth + optical_step, channel) > desired_density) && !can_skip_sampling;
+                Mask optical_depth_needs_correction = iteration_mask && (index_spectrum(optical_depth + optical_step, channel) > desired_density);
 
                 if (any(optical_depth_needs_correction)) {
                     Float interp(1.0f);
                     masked(interp, optical_depth_needs_correction) = index_spectrum(desired_density - optical_depth, channel) / index_spectrum(optical_step, channel);
                     interp        = clamp(interp, 0.f, 1.f);
-                    masked(dt, optical_depth_needs_correction) *= interp;
-                }
 
-                reached_density |= optical_depth_needs_correction;
-
-                // Sample new points based on updated step
-                if (m_use_rk45) {
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.3f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a2, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.6f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a3, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.875f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a5, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a4, iteration_mask) = local_st;
-
-                    // 5th order estimate of optical_step
-                    masked(optical_step, optical_depth_needs_correction) = dt * (0.38390790343915343f * a2 + 0.24459273726851852f * a3 + 0.01932198660714286f * a4 + 0.25000000000000000f * a5);
-                } else {
-                    masked(mi.p, optical_depth_needs_correction) = ray(current_flight_distance + dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(optical_step, optical_depth_needs_correction) = dt * local_st;
+                    // Sample new points based on updated step
+                    auto [corr_next_depth, corr_curr_dt, corr_next_dt] = integration_step(df_opt, curr_dt * interp * 0.9f, optical_depth_needs_correction, false);
+                    masked(optical_step, optical_depth_needs_correction) = corr_next_depth;
+                    masked(next_dt, optical_depth_needs_correction)      = corr_next_dt;
+                    reached_density |= optical_depth_needs_correction && (corr_curr_dt >= curr_dt * interp - math::RayEpsilon<Float>);
+                    masked(curr_dt, optical_depth_needs_correction)      = corr_curr_dt;
                 }
                 // ------------------------------------------------------- //
+                masked(dt, iteration_mask) = curr_dt;
+
+                // auto [next_rad, curr_dt_ignored, next_dt_ignored] = integration_step(df_rad, dt, iteration_mask, false);
+                // masked(total_radiance, iteration_mask) += exp(-optical_depth) * next_rad;
+
+                // {
+                //     std::ostringstream oss;
+                //     oss << "[main volume transport iter]: " << optical_depth_needs_correction << ", " << reached_density << ", " << next_dt << ", " << curr_dt << ", " << optical_step << ", " << channel << ", " << iteration_mask << ", " << current_flight_distance << ", " << optical_depth;
+                //     Log(Debug, "%s", oss.str());
+                // }
 
                 // Update accumulators and ray position
                 masked(current_flight_distance, iteration_mask) += dt;
                 masked(optical_depth, iteration_mask) += optical_step;
                 masked(mi.t, iteration_mask) += dt;
-
-                // {
-                //     std::ostringstream oss;
-                //     oss << "[main volume transport iter]: " << pdf_correction_exp << ", " << dt << ", " << local_st << ", " << channel << ", " << iteration_mask << ", " << current_flight_distance << ", " << optical_depth;
-                //     Log(Debug, "%s", oss.str());
-                // }
+                masked(mi.p, iteration_mask) = ray(current_flight_distance + mi.mint);
 
                 // Update step size for next iteration
                 // If the volume is inhomogeneous, we use the smaller of the adaptive step or the remaining distance
                 // If the volume is homogeneous, then next_dt is infinite and therefore we either
                 //     terminate the iteration (current_flight_distance == max_flight_distance)
                 //     or we take a step to close the gap between max_flight_distance and current_flight_distance
-                if (m_use_rk45) {
-                    masked(dt, iteration_mask && !medium->is_homogeneous()) = min(max_flight_distance - current_flight_distance, next_dt);
+                if (m_use_adaptive_sampling) {
+                    masked(dt, iteration_mask) = min(max_flight_distance - current_flight_distance, next_dt);
                 } else {
-                    masked(dt, iteration_mask && !medium->is_homogeneous()) = min(max_flight_distance - current_flight_distance, m_volume_step_size);
+                    masked(dt, iteration_mask) = min(max_flight_distance - current_flight_distance, m_volume_step_size);
                 }
 
                 // Update iteration mask
@@ -334,25 +313,17 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 iteration_mask &= (current_flight_distance < max_flight_distance - math::RayEpsilon<Float>) && !reached_density;
             }
 
+            std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, active_medium);
+            local_radiance = medium->get_radiance(mi, active_medium);
             tr = exp(-optical_depth);
             Spectrum path_pdf = select(mi.t < max_flight_distance, tr * local_st, tr);
-            // while (any(pdf_correction_exp > 0)) {
-            //     masked(path_pdf, pdf_correction_exp > 0) *= select(pdf_correction_exp > 0, -enoki::log(max_throughput)/pdf_correction_exp, 1.f);
-            //     masked(pdf_correction_exp, pdf_correction_exp > 0) -= 1;
-            // }
             Float tr_pdf   = index_spectrum(path_pdf, channel);
 
             masked(mi.t, active_medium && mi.t >= max_flight_distance) = math::Infinity<Float>;
             masked(mi.t, active_medium && mi.t >= si.t) = math::Infinity<Float>;
-            
-            // masked(mi.t, active_medium && (mi.t >= mi.maxt || mi.t >= si.t - math::RayEpsilon<Float> || max_flight_distance <= 0.f || eq(max_flight_distance, math::Infinity<Float>))) = math::Infinity<Float>;
-            std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, active_medium);
-            local_radiance = medium->get_radiance(mi, active_medium);
 
-            masked(throughput, active_medium && !can_skip_sampling) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.);
-            masked(result,     active_medium && !can_skip_sampling) += throughput * (local_st - local_ss) * local_radiance;
-            masked(result,     active_medium &&  can_skip_sampling) += select(local_st > 0.f, throughput * ((local_st - local_ss) * (local_radiance / local_st)) * (1.f - tr), 0.f);
-            masked(throughput, active_medium &&  can_skip_sampling) *= tr;
+            masked(throughput, active_medium) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
+            masked(result,     active_medium) += throughput * local_radiance * (local_st - local_ss);
 
             needs_intersection &= !active_medium;
 
@@ -509,7 +480,7 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
     Float total_dist = 0.f;
     SurfaceInteraction3f si = zero<SurfaceInteraction3f>();
     si.t = math::Infinity<Float>;
-    Mask needs_intersection = true;
+    Mask needs_intersection = true, use_adaptive_sampling = m_use_adaptive_sampling;
     while (any(active)) {
         Float remaining_dist = ds.dist * (1.f - math::ShadowEpsilon<Float>) - total_dist;
         ray.maxt = remaining_dist;
@@ -522,7 +493,7 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
         Mask active_surface = active && !active_medium;
 
         if (any_or<true>(active_medium)) {
-            // Get maximum transmission of raymarched ray
+            // Get raymarching interaction
             auto mi = sample_raymarched_interaction(ray, medium, channel, active_medium);
             masked(ray.maxt, active_medium && medium->is_homogeneous()) = mi.maxt;
             Mask intersect = needs_intersection || active_medium;
@@ -538,7 +509,6 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
             Float max_flight_distance     = min(remaining_dist, min(si.t, mi.maxt)) - mi.mint;
             Float current_flight_distance = max(mi.t - mi.mint, 0.f);
             Float dt                      = m_volume_step_size;
-            Float next_dt                 = math::Infinity<Float>;
 
             // Instantiate masks that track which rays are able to continue marching
             Mask iteration_mask = active_medium;
@@ -564,8 +534,12 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
             iteration_mask &= !medium->is_homogeneous();
 
             // RK45 parameters
-            Spectrum a1(0.f), a2(0.f), a3(0.f), a4(0.f), a5(0.f), est1(0.f), est2(0.f);
-            Float err_estimate(0.f);
+            //     Optical Depth Function
+            std::function<Spectrum(Float, Mask)> df_opt = [&ray, &mi, &medium, &current_flight_distance](Float dt_in, Mask active) {
+                masked(mi.p, active) = ray(current_flight_distance + dt_in + mi.mint);
+                auto [local_ss, local_sn, local_st] = medium->get_scattering_coefficients(mi, active);
+                return local_st;
+            };
 
             // {
             //     std::ostringstream oss;
@@ -576,74 +550,14 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
             while (any(iteration_mask)) {
                 MTS_MASKED_FUNCTION(ProfilerPhase::MediumRaymarch, iteration_mask);
             
-                if (m_use_rk45) {
-                    // --------------------- RK45CK -------------------------- //
-                    // In order to accelerate the numerical integration via marching, we can use an adaptive stepping algorithm
-                    // We utilise the embedded Runge-Kutta 4(5) method with Cash-Karp coefficients
-                    // With this we can find the total optical depth of the ray segment that starts at
-                    // current_flight_distance and ends at current_flight_distance + dt
-                    // Since the ODE is linear and the right hand side is independent of the dependent variable (optical_depth)
-                    // We can simply accumulate the results of each segment as we step through them
-                    //
-                    // There is no 'a0' as the optical depth of a segment of length 0 is 0
-                    masked(est1, iteration_mask) *= 0.f;
-                    masked(est2, iteration_mask) *= 0.f;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.2f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a1, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.3f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a2, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.6f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a3, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.875f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a5, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a4, iteration_mask) = local_st;
-
-                    // 4th order estimate of optical_step
-                    masked(est1, iteration_mask) = dt * (0.40257648953301128f * a2 + 0.21043771043771045f * a3 + 0.28910220214568039f * a5);
-                    // 5th order estimate of optical_step
-                    masked(est2, iteration_mask) = dt * (0.38390790343915343f * a2 + 0.24459273726851852f * a3 + 0.01932198660714286f * a4 + 0.25000000000000000f * a5);
-
-                    // Error estimate from difference between 5th and 4th order estimates
-                    masked(err_estimate, iteration_mask) = hmax(abs(detach(est2) - detach(est1)));
-                    // Based on scipy scaling of error
-                    auto scale = m_atol + max(hmax(abs(detach(est1))), hmax(abs(detach(est2)))) * m_rtol;
-
-                    Float corr = select(err_estimate > 0.f, 0.8f * enoki::pow(err_estimate / scale, -0.20f), 10.0f);
-
-                    masked(next_dt, iteration_mask && !medium->is_homogeneous()) = max(100.0f * math::RayEpsilon<Float>, 0.9f * dt * min(10.f, max(0.2f, corr)));
-
-                    // {
-                    //     std::ostringstream oss;
-                    //     oss << "[emitter transport rk45]: " << dt * local_st << ", " << est1 << ", " << est2 << ", " << next_dt << ", " << dt << std::endl;
-                    //     oss << "[emitter transport rk45 - coeffs]: " << a1 << ", " << a2 << ", " << a3 << ", " << a4 << ", " << a5;
-                    //     Log(Debug, "%s", oss.str());
-                    // }
-
-                    masked(optical_step, iteration_mask) = select(medium->is_homogeneous(), dt * local_st, est2);
-                    // ------------------------------------------------------- //
-                } else {
-                    // --------------------- Fixed Step Integration----------- //
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(optical_step, iteration_mask) = dt * local_st;
-                    // ------------------------------------------------------- //
-                }
+                auto [next_depth, curr_dt, next_dt] = integration_step(df_opt, dt, iteration_mask, use_adaptive_sampling);
+                masked(optical_step, iteration_mask) = next_depth;
 
                 // Update accumulators and ray position
                 masked(current_flight_distance, iteration_mask) += dt;
                 masked(optical_depth, iteration_mask) += optical_step;
                 masked(mi.t, iteration_mask) += dt;
+                masked(mi.p, iteration_mask) = ray(current_flight_distance + mi.mint);
 
                 // {
                 //     std::ostringstream oss;
@@ -656,10 +570,10 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
                 // If the volume is homogeneous, then next_dt is infinite and therefore we either
                 //     terminate the iteration (current_flight_distance == max_flight_distance)
                 //     or we take a step to close the gap between max_flight_distance and current_flight_distance
-                if (m_use_rk45) {
-                    masked(dt, iteration_mask && !medium->is_homogeneous()) = min(max_flight_distance - current_flight_distance, next_dt);
+                if (m_use_adaptive_sampling) {
+                    masked(dt, iteration_mask) = min(max_flight_distance - current_flight_distance, next_dt);
                 } else {
-                    masked(dt, iteration_mask && !medium->is_homogeneous()) = min(max_flight_distance - current_flight_distance, m_volume_step_size);
+                    masked(dt, iteration_mask) = min(max_flight_distance - current_flight_distance, m_volume_step_size);
                 }
 
                 // Update iteration mask
@@ -668,16 +582,11 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
             }
 
             Spectrum tr = exp(-optical_depth);
-            // auto path_pdf = select(mi.t < max_flight_distance, tr * local_st, tr);
-            // auto tr_pdf   = index_spectrum(path_pdf, channel);
 
             masked(mi.t, active_medium && mi.t >= max_flight_distance) = math::Infinity<Float>;
             masked(mi.t, active_medium && mi.t >= si.t) = math::Infinity<Float>;
-            
-            // masked(mi.t, active_medium && (mi.t >= mi.maxt || mi.t >= si.t - math::RayEpsilon<Float> || max_flight_distance <= 0.f || eq(max_flight_distance, math::Infinity<Float>))) = math::Infinity<Float>;
 
             masked(transmittance, active_medium) *= tr;
-            // masked(transmittance, active_medium && mi.is_valid()) *= tr;
 
             // Handle exceeding the maximum distance by medium sampling
             masked(total_dist, active_medium && (mi.t > remaining_dist) && mi.is_valid()) = ds.dist;
@@ -743,7 +652,7 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
     Spectrum emitter_val(0.0f);
 
     // Assumes the ray was alread intersected to compute si_ray before calling this method
-    Mask needs_intersection = false;
+    Mask needs_intersection = false, use_adaptive_sampling = m_use_adaptive_sampling;
 
     Spectrum transmittance(1.0f);
     Float emitter_pdf(0.0f);
@@ -770,7 +679,6 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
             Float max_flight_distance     = min(si.t, mi.maxt) - mi.mint;
             Float current_flight_distance = max(mi.t - mi.mint, 0.f);
             Float dt                      = m_volume_step_size;
-            Float next_dt                 = math::Infinity<Float>;
 
             // Instantiate masks that track which rays are able to continue marching
             Mask iteration_mask = active_medium;
@@ -796,8 +704,12 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
             iteration_mask &= !medium->is_homogeneous();
 
             // RK45 parameters
-            Spectrum a1(0.f), a2(0.f), a3(0.f), a4(0.f), a5(0.f), est1(0.f), est2(0.f);
-            Float err_estimate(0.f);
+            //     Optical Depth Function
+            std::function<Spectrum(Float, Mask)> df_opt = [&ray, &mi, &medium, &current_flight_distance](Float dt_in, Mask active) {
+                masked(mi.p, active) = ray(current_flight_distance + dt_in + mi.mint);
+                auto [local_ss, local_sn, local_st] = medium->get_scattering_coefficients(mi, active);
+                return local_st;
+            };
 
             // {
             //     std::ostringstream oss;
@@ -807,75 +719,14 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
 
             while (any(iteration_mask)) {
                 MTS_MASKED_FUNCTION(ProfilerPhase::MediumRaymarch, iteration_mask);
-            
-                if (m_use_rk45) {
-                    // --------------------- RK45CK -------------------------- //
-                    // In order to accelerate the numerical integration via marching, we can use an adaptive stepping algorithm
-                    // We utilise the embedded Runge-Kutta 4(5) method with Cash-Karp coefficients
-                    // With this we can find the total optical depth of the ray segment that starts at
-                    // current_flight_distance and ends at current_flight_distance + dt
-                    // Since the ODE is linear and the right hand side is independent of the dependent variable (optical_depth)
-                    // We can simply accumulate the results of each segment as we step through them
-                    //
-                    // There is no 'a0' as the optical depth of a segment of length 0 is 0
-                    masked(est1, iteration_mask) *= 0.f;
-                    masked(est2, iteration_mask) *= 0.f;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.2f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a1, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.3f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a2, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.6f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a3, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + 0.875f * dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a5, iteration_mask) = local_st;
-
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(a4, iteration_mask) = local_st;
-
-                    // 4th order estimate of optical_step
-                    masked(est1, iteration_mask) = dt * (0.40257648953301128f * a2 + 0.21043771043771045f * a3 + 0.28910220214568039f * a5);
-                    // 5th order estimate of optical_step
-                    masked(est2, iteration_mask) = dt * (0.38390790343915343f * a2 + 0.24459273726851852f * a3 + 0.01932198660714286f * a4 + 0.25000000000000000f * a5);
-
-                    // Error estimate from difference between 5th and 4th order estimates
-                    masked(err_estimate, iteration_mask) = hmax(abs(detach(est2) - detach(est1)));
-                    // Based on scipy scaling of error
-                    auto scale = m_atol + max(hmax(abs(detach(est1))), hmax(abs(detach(est2)))) * m_rtol;
-
-                    Float corr = select(err_estimate > 0.f, 0.8f * enoki::pow(err_estimate / scale, -0.20f), 10.0f);
-
-                    masked(next_dt, iteration_mask && !medium->is_homogeneous()) = max(100.0f * math::RayEpsilon<Float>, 0.9f * dt * min(10.f, max(0.2f, corr)));
-
-                    // {
-                    //     std::ostringstream oss;
-                    //     oss << "[direct transport rk45]: " << dt * local_st << ", " << est1 << ", " << est2 << ", " << next_dt << ", " << dt << std::endl;
-                    //     oss << "[direct transport rk45 - coeffs]: " << a1 << ", " << a2 << ", " << a3 << ", " << a4 << ", " << a5;
-                    //     Log(Debug, "%s", oss.str());
-                    // }
-
-                    masked(optical_step, iteration_mask) = select(medium->is_homogeneous(), dt * local_st, est2);
-                    // ------------------------------------------------------- //
-                } else {
-                    // --------------------- Fixed Step Integration----------- //
-                    masked(mi.p, iteration_mask) = ray(current_flight_distance + dt + mi.mint);
-                    std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, iteration_mask);
-                    masked(optical_step, iteration_mask) = dt * local_st;
-                    // ------------------------------------------------------- //
-                }
+                auto [next_depth, curr_dt, next_dt] = integration_step(df_opt, dt, iteration_mask, use_adaptive_sampling);
+                masked(optical_step, iteration_mask) = next_depth;
 
                 // Update accumulators and ray position
                 masked(current_flight_distance, iteration_mask) += dt;
                 masked(optical_depth, iteration_mask) += optical_step;
                 masked(mi.t, iteration_mask) += dt;
+                masked(mi.p, iteration_mask) = ray(current_flight_distance + mi.mint);
 
                 // {
                 //     std::ostringstream oss;
@@ -888,10 +739,10 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
                 // If the volume is homogeneous, then next_dt is infinite and therefore we either
                 //     terminate the iteration (current_flight_distance == max_flight_distance)
                 //     or we take a step to close the gap between max_flight_distance and current_flight_distance
-                if (m_use_rk45) {
-                    masked(dt, iteration_mask && !medium->is_homogeneous()) = min(max_flight_distance - current_flight_distance, next_dt);
+                if (m_use_adaptive_sampling) {
+                    masked(dt, iteration_mask) = min(max_flight_distance - current_flight_distance, next_dt);
                 } else {
-                    masked(dt, iteration_mask && !medium->is_homogeneous()) = min(max_flight_distance - current_flight_distance, m_volume_step_size);
+                    masked(dt, iteration_mask) = min(max_flight_distance - current_flight_distance, m_volume_step_size);
                 }
 
                 // Update iteration mask
@@ -900,16 +751,11 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
             }
 
             Spectrum tr = exp(-optical_depth);
-            // auto path_pdf = select(mi.t < max_flight_distance, tr * local_st, tr);
-            // auto tr_pdf   = index_spectrum(path_pdf, channel);
 
             masked(mi.t, active_medium && mi.t >= max_flight_distance) = math::Infinity<Float>;
             masked(mi.t, active_medium && mi.t >= si.t) = math::Infinity<Float>;
-            
-            // masked(mi.t, active_medium && (mi.t >= mi.maxt || mi.t >= si.t - math::RayEpsilon<Float> || max_flight_distance <= 0.f || eq(max_flight_distance, math::Infinity<Float>))) = math::Infinity<Float>;
 
             masked(transmittance, active_medium) *= tr;
-            // masked(transmittance, active_medium && mi.is_valid()) *= tr;
 
             needs_intersection &= !active_medium;
             
@@ -984,7 +830,7 @@ std::string to_string() const override {
                         "  max_depth = %i,\n"
                         "  rr_depth = %i\n"
                         "]",
-                        m_volume_step_size, m_rtol, m_atol, (m_use_rk45 ? "true" : "false"), m_max_depth, m_rr_depth);
+                        m_volume_step_size, m_rtol, m_atol, (m_use_adaptive_sampling ? "true" : "false"), m_max_depth, m_rr_depth);
 }
 
 Float mis_weight(Float pdf_a, Float pdf_b) const {
@@ -998,7 +844,7 @@ MTS_DECLARE_CLASS()
 protected:
 float m_volume_step_size, m_rtol, m_atol;
 int m_stratified_samples;
-bool m_use_rk45;
+bool m_use_adaptive_sampling;
 };
 
 MTS_IMPLEMENT_CLASS_VARIANT(RaymarchingPathIntegrator, MonteCarloIntegrator);

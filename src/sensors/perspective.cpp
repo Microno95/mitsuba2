@@ -128,6 +128,12 @@ public:
         m_image_rect.expand(ScalarPoint2f(pmax.x(), pmax.y()) / pmax.z());
         m_normalization = 1.f / m_image_rect.volume();
         m_needs_sample_3 = false;
+
+        // std::ostringstream oss;
+        // oss << "World Transform:  " << m_world_transform  << std::endl;
+        // oss << "Camera to Sample: " << m_camera_to_sample << std::endl;
+        // oss << "Sample to Camera: " << m_sample_to_camera << std::endl;
+        // Log(Info, "%s", oss.str());
     }
 
     //! @}
@@ -164,6 +170,13 @@ public:
         ray.d = trafo * d;
         ray.update();
 
+        // std::ostringstream oss;
+        // oss << "Sample Point: " << position_sample << std::endl;
+        // oss << "Dir: " << d << std::endl;
+        // oss << "Ray: " << ray << std::endl;
+        // oss << "Trf: " << trafo << std::endl;
+        // Log(Info, "%s", oss.str());
+
         return std::make_pair(ray, wav_weight);
     }
 
@@ -197,6 +210,13 @@ public:
         ray.d_x = trafo * normalize(Vector3f(near_p) + m_dx);
         ray.d_y = trafo * normalize(Vector3f(near_p) + m_dy);
         ray.has_differentials = true;
+
+        // std::ostringstream oss;
+        // oss << "Sample Point: " << position_sample << std::endl;
+        // oss << "Dir: " << d << std::endl;
+        // oss << "Ray: " << ray << std::endl;
+        // oss << "Trf: " << trafo << std::endl;
+        // Log(Info, "%s", oss.str());
 
         return std::make_pair(ray, wav_weight);
     }
