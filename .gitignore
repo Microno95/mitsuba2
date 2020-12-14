@@ -46,6 +46,9 @@ Release
 *.filters
 /.vs
 /x64
+/out
+CMakeSettings.json
+debug.log
 
 # Python
 __pycache__
