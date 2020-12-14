@@ -269,7 +269,7 @@ Scene<Float, Spectrum>::sample_volume_emitter_direction(const Interaction3f &ref
 
             // Account for the discrete probability of sampling this emitter
             ds.pdf *= emitter_pdf * emitter->pdf_direction(ref, ds, active);
-            sampled_medium = m_emissive_mediums[index]->interior_medium();
+            sampled_medium = emitter->interior_medium();
         }
 
         active &= neq(ds.pdf, 0.f);
