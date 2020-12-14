@@ -254,19 +254,6 @@ public:
 					masked(ray, act_medium_scatter) = new_ray;
 					needs_intersection |= act_medium_scatter;
 				}
-                    
-                // Log event values
-                if (any(!isfinite(weight_emission) ||
-                        !isfinite(prob_emission) ||
-                        !isfinite(weight_scatter) ||
-                        !isfinite(prob_scatter) ||
-                        !isfinite(weight_null) ||
-                        !isfinite(prob_null) ||
-                        !isfinite(throughput))) {
-                    std::ostringstream oss;
-                    oss << "[volume sampling]: " << result << "<>" << throughput << " { " << active << " | " << active_medium << " } event={ " << emission_interaction << " ; " << scatter_interaction << " ; " << null_interaction << " }, we= " << weight_emission << " , ws= " << weight_scatter << " , wn= " << weight_null << "| pe= " << prob_emission << ", ps= " << prob_scatter << ", pn= " << prob_null;
-                    Log(Warn, "%s", oss.str());
-                }
 			}
 
             // --------------------- Surface Interactions ---------------------
@@ -424,19 +411,6 @@ public:
                     auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, prev_transmittance, channel, 2);
 
                     masked(transmittance, active_medium) *= mi.sigma_n;
-                    
-                    // Log event values
-                    if (any(!isfinite(weight_emission) ||
-                            !isfinite(prob_emission) ||
-                            !isfinite(weight_scatter) ||
-                            !isfinite(prob_scatter) ||
-                            !isfinite(weight_null) ||
-                            !isfinite(prob_null) ||
-                            !isfinite(transmittance))) {
-                        std::ostringstream oss;
-                        oss << "[emitter sampling]: { " << transmittance << " } we= " << weight_emission << " , ws= " << weight_scatter << " , wn= " << weight_null << " | pe= " << prob_emission << " , ps= " << prob_scatter << " , pn= " << prob_null;
-                        Log(Debug, "%s", oss.str());
-                    }
                 }
             }
 
@@ -551,19 +525,6 @@ public:
                     // Compute emmission, scatter and null event probabilities
 
                     masked(transmittance, active_medium) *= mi.sigma_n;
-                    
-                    // Log event values
-                    if (any(!isfinite(weight_emission) ||
-                            !isfinite(prob_emission) ||
-                            !isfinite(weight_scatter) ||
-                            !isfinite(prob_scatter) ||
-                            !isfinite(weight_null) ||
-                            !isfinite(prob_null) ||
-                            !isfinite(transmittance))) {
-                        std::ostringstream oss;
-                        oss << "[emitter sampling]: { " << transmittance << " } we= " << weight_emission << " , ws= " << weight_scatter << " , wn= " << weight_null << " | pe= " << prob_emission << " , ps= " << prob_scatter << " , pn= " << prob_null;
-                        Log(Debug, "%s", oss.str());
-                    }
                 }
             }
 
@@ -652,19 +613,6 @@ public:
                     auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, prev_transmittance, channel, 2);
 
                     masked(transmittance, active_medium) *= mi.sigma_n;
-                    
-                    // Log event values
-                    if (any(!isfinite(weight_emission) ||
-                            !isfinite(prob_emission) ||
-                            !isfinite(weight_scatter) ||
-                            !isfinite(prob_scatter) ||
-                            !isfinite(weight_null) ||
-                            !isfinite(prob_null) ||
-                            !isfinite(transmittance))) {
-                        std::ostringstream oss;
-                        oss << "[emitter sampling]: { " << transmittance << " } we= " << weight_emission << " , ws= " << weight_scatter << " , wn= " << weight_null << " | pe= " << prob_emission << " , ps= " << prob_scatter << " , pn= " << prob_null;
-                        Log(Debug, "%s", oss.str());
-                    }
                 }
             }
 
