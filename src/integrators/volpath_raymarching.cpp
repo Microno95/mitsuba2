@@ -22,10 +22,17 @@ MTS_IMPORT_TYPES(Scene, Sampler, Emitter, EmitterPtr, BSDF, BSDFPtr,
 
 RaymarchingPathIntegrator(const Properties &props) : Base(props) {
     m_volume_step_size   = props.float_("volume_step_size", 0.025f);
-    m_stratified_samples = props.int_("stratified_samples", 0);
-    m_atol               = props.float_("absolute_tolerance", 1e-5f);
-    m_rtol               = props.float_("relative_tolerance", 1e-5f);
-    m_use_adaptive_sampling           = props.bool_("adaptive_stepping", false);
+    int strat_sample_init = props.int_("stratified_samples", 1);
+    if (strat_sample_init <= 0) {
+        std::stringstream oss;
+        oss << "stratified_samples cannot be <= 0, was given " << strat_sample_init << ", set stratified_samples to 1";
+        Log(Warn, "%s", oss.str());
+    }
+    m_stratified_samples    = std::max(strat_sample_init, 1);
+    m_atol                  = props.float_("absolute_tolerance", 1e-5f);
+    m_rtol                  = props.float_("relative_tolerance", 1e-5f);
+    m_use_adaptive_sampling = props.bool_("adaptive_stepping", false);
+    m_use_bisection         = props.bool_("exact_termination", false);
 }
 
 MTS_INLINE
@@ -117,8 +124,79 @@ integration_step(std::function<Spectrum(Float, Mask)>& df, Float dt, Mask active
         }
         return std::make_tuple(est2, curr_dt, next_dt);
     } else {
-        
         return std::make_tuple(dt * (df(0.f * dt, active) + df(dt, active)) * 0.5f, dt, dt);
+    }
+}
+
+std::tuple<std::pair<Spectrum, Spectrum>, Float, Float>
+integration_step_radiance_paired(std::function<std::pair<Spectrum, Spectrum>(Spectrum, Float, Mask)>& df_paired, Spectrum optical_depth, Float dt, Mask active, Mask use_adaptive_sampling) const {
+    if (m_use_adaptive_sampling) {
+        Spectrum a1_opt(0.f), a2_opt(0.f), a3_opt(0.f), a4_opt(0.f), a5_opt(0.f), est1_opt(0.f), est2_opt(0.f);
+        Spectrum a1_rad(0.f), a2_rad(0.f), a3_rad(0.f), a4_rad(0.f), a5_rad(0.f), est1_rad(0.f), est2_rad(0.f);
+        Float err_estimate(0.f), curr_dt(dt), next_dt(dt);
+        Spectrum opt_depth1(0.f), rad1(0.f);
+        Mask step_rejected = true;
+        // --------------------- RK45CK -------------------------- //
+        // In order to accelerate the numerical integration via marching, we can use an adaptive stepping algorithm
+        // We utilise the embedded Runge-Kutta 4(5) method with Cash-Karp coefficients
+        // With this we can find the total optical depth of the ray segment that starts at
+        // current_flight_distance and ends at current_flight_distance + dt
+        // Since the ODE is linear and the right hand side is independent of the dependent variable (optical_depth)
+        // We can simply accumulate the results of each segment as we step through them
+        //
+        // There is no 'a0' as the optical depth of a segment of length 0 is 0
+        while (any(step_rejected)) {
+            std::tie(opt_depth1, rad1) = df_paired(optical_depth, 0.2f   * curr_dt, active && step_rejected);
+            masked(a1_opt, active && step_rejected) = opt_depth1;
+            masked(a1_rad, active && step_rejected) = rad1;
+            std::tie(opt_depth1, rad1) = df_paired(optical_depth, 0.3f   * curr_dt, active && step_rejected);
+            masked(a2_opt, active && step_rejected) = opt_depth1;
+            masked(a2_rad, active && step_rejected) = rad1;
+            std::tie(opt_depth1, rad1) = df_paired(optical_depth, 0.6f   * curr_dt, active && step_rejected);
+            masked(a3_opt, active && step_rejected) = opt_depth1;
+            masked(a3_rad, active && step_rejected) = rad1;
+            std::tie(opt_depth1, rad1) = df_paired(optical_depth, 1.0f   * curr_dt, active && step_rejected);
+            masked(a4_opt, active && step_rejected) = opt_depth1;
+            masked(a4_rad, active && step_rejected) = rad1;
+            std::tie(opt_depth1, rad1) = df_paired(optical_depth, 0.875f   * curr_dt, active && step_rejected);
+            masked(a5_opt, active && step_rejected) = opt_depth1;
+            masked(a5_rad, active && step_rejected) = rad1;
+
+            // 4th order estimate of optical_step
+            masked(est1_opt, active && step_rejected) = curr_dt * (0.40257648953301128f * a2_opt + 0.21043771043771045f * a3_opt + 0.28910220214568039f * a5_opt);
+            masked(est1_rad, active && step_rejected) = curr_dt * (0.40257648953301128f * a2_rad + 0.21043771043771045f * a3_rad + 0.28910220214568039f * a5_rad);
+            // 5th order estimate of optical_step
+            masked(est2_opt, active && step_rejected) = curr_dt * (0.38390790343915343f * a2_opt + 0.24459273726851852f * a3_opt + 0.01932198660714286f * a4_opt + 0.25000000000000000f * a5_opt);
+            masked(est2_rad, active && step_rejected) = curr_dt * (0.38390790343915343f * a2_rad + 0.24459273726851852f * a3_rad + 0.01932198660714286f * a4_rad + 0.25000000000000000f * a5_rad);
+
+            // Error estimate from difference between 5th and 4th order estimates
+            masked(err_estimate, active && step_rejected) = max(hmax(abs(detach(est2_opt) - detach(est1_opt))), hmax(abs(detach(est2_rad) - detach(est1_rad))));
+            // Based on scipy scaling of error
+            auto max_diff1 = max(hmax(abs(detach(est1_opt))), hmax(abs(detach(est1_rad))));
+            auto max_diff2 = max(hmax(abs(detach(est2_opt))), hmax(abs(detach(est2_rad))));
+            auto scale = m_atol + max(max_diff1, max_diff2) * m_rtol;
+            auto error_norm = err_estimate / scale;
+
+            Float corr = select(err_estimate > 0.f, 0.8f * enoki::pow(error_norm, -0.20f), 1.25f);
+
+            masked(next_dt, active && step_rejected) = max(100.0f * math::RayEpsilon<Float>, 0.8f * curr_dt * min(10.f, max(0.2f, corr)));
+            step_rejected &= (use_adaptive_sampling && (error_norm >= 1.0f) && (next_dt >= 200.0f * math::RayEpsilon<Float>)) && (next_dt < curr_dt);
+            masked(curr_dt, active && step_rejected) = next_dt;
+        }
+        return std::make_tuple(std::make_pair(est2_opt, est2_rad), curr_dt, next_dt);
+    } else {
+        Spectrum opt_depth1(0.f), rad1(0.f);
+        Spectrum a1_opt(0.f), a2_opt(0.f);
+        Spectrum a1_rad(0.f), a2_rad(0.f);
+        std::tie(opt_depth1, rad1) = df_paired(optical_depth, 0.0f * dt, active);
+        masked(a1_opt, active) = opt_depth1;
+        masked(a1_rad, active) = rad1;
+        std::tie(opt_depth1, rad1) = df_paired(optical_depth, 1.0f * dt, active);
+        masked(a2_opt, active) = opt_depth1;
+        masked(a2_rad, active) = rad1;
+        return std::make_tuple(
+            std::make_pair(dt * (a1_opt + a2_opt) * 0.5f, dt * (a1_rad + a2_rad) * 0.5f), dt, dt
+        );
     }
 }
 
@@ -180,8 +258,6 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
         Mask act_null_scatter = false, act_medium_scatter = false, escaped_medium = false;
 
         if (any_or<true>(active_medium)) {
-            // Get maximum transmission of raymarched ray
-            Float max_throughput = sampler->next_1d(active_medium);
             mi = sample_raymarched_interaction(ray, medium, channel, active_medium);
             masked(ray.maxt, active_medium && medium->is_homogeneous()) = mi.maxt;
             Mask intersect = needs_intersection || active_medium;
@@ -193,16 +269,11 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
             needs_intersection &= !intersect;
 
             // Get maximum flight distance of ray
-            // If there is a surface then we should target that instead of the throughput limit
             Float max_flight_distance     = min(si.t, mi.maxt) - mi.mint;
-            Float desired_density         = -enoki::log(max_throughput);
-            // Let's say we have a medium where the ray terminates at a point that has no scattering
-            // It would be in our interest to continue the ray through that region instead of terminating
-            // To do so, we will draw a new uniform random variable and then correct the pdf
-            // of the ray at the end
-            // UInt32 pdf_correction_exp     = 0;
             Float current_flight_distance = max(mi.t - mi.mint, 0.f);
-            Float dt                      = m_volume_step_size;
+            Float dt                      = max_flight_distance - current_flight_distance;
+            Float max_throughput          = sampler->next_1d(active_medium);
+            Float desired_density         = -enoki::log(max_throughput);
 
             // Instantiate masks that track which rays are able to continue marching
             Mask iteration_mask = active_medium;
@@ -219,18 +290,10 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
 
             // Initialise step size
             // For inhomogeneous media we will use RK45 to do the integration
-            // If the medium is homogeneous, we can just skip ahead
-            masked(dt, iteration_mask) = max_flight_distance - current_flight_distance;
-            // masked(dt, iteration_mask) = min(dt, m_volume_step_size*sampler->next_1d(iteration_mask));
-            masked(dt, iteration_mask && !medium->is_homogeneous()) = min(dt, m_volume_step_size*sampler->next_1d(iteration_mask));
-            // We need to terminate the ray at an earlier point if the medium is scattering
+            // For inhomogeneous media we need to take integration steps, here we jitter the initial step and impose that a step is at least 1 ray epsilon
+            masked(dt, iteration_mask && !medium->is_homogeneous()) = max(math::RayEpsilon<Float>, min(dt, m_volume_step_size) * sampler->next_1d(iteration_mask));
+            // For homogeneous media we can simply sample the correct distance to achieve the desired density
             masked(dt, iteration_mask &&  medium->is_homogeneous()) = min(dt, desired_density / index_spectrum(local_st, channel));
-            // Skip integration for homogeneous media
-            masked(current_flight_distance, iteration_mask) += dt;
-            masked(optical_depth, iteration_mask) += dt * local_st;
-            masked(mi.t, iteration_mask) += dt;
-            masked(mi.p, iteration_mask) = ray(current_flight_distance + mi.mint);
-            iteration_mask &= !medium->is_homogeneous();
 
             // RK45 parameters
             //     Optical Depth Function
@@ -238,13 +301,6 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 masked(mi.p, active) = ray(current_flight_distance + dt_in + mi.mint);
                 auto [local_ss, local_sn, local_st] = medium->get_scattering_coefficients(mi, active);
                 return local_st;
-            };
-            //     Radiance Function
-            std::function<Spectrum(Float, Mask)> df_rad = [&ray, &mi, &medium, &current_flight_distance](Float dt_in, Mask active) {
-                masked(mi.p, active) = ray(current_flight_distance + dt_in + mi.mint);
-                auto [local_ss, local_sn, local_st] = medium->get_scattering_coefficients(mi, active);
-                Spectrum local_radiance = medium->get_radiance(mi, active);
-                return select(local_st > 0.f, (local_radiance / local_st) * (local_st - local_ss) * (1.f - exp(-dt_in * local_st)), 0.f);
             };
 
             // {
@@ -257,7 +313,6 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 MTS_MASKED_FUNCTION(ProfilerPhase::MediumRaymarch, iteration_mask);
             
                 auto [next_depth, curr_dt, next_dt] = integration_step(df_opt, dt, iteration_mask, use_adaptive_sampling);
-                // auto [next_depth, curr_dt, next_dt] = integration_step(df_opt, dt, iteration_mask, use_adaptive_sampling);
                 masked(optical_step, iteration_mask) = next_depth;
 
                 // --------------------- Correction ---------------------- //
@@ -265,37 +320,71 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 // If we do, find the point between this point and the last point that reaches the desired density
                 // The desired density and the obtained density may differ since we sample the density at the point we interpolate to
                 // And if the step size is larger than 2x the mean grid spacing then this can be quite different
-                Mask optical_depth_needs_correction = iteration_mask && (index_spectrum(optical_depth + optical_step, channel) > desired_density);
+                Mask optical_depth_needs_correction = iteration_mask && (index_spectrum(optical_depth + optical_step, channel) >= desired_density);
+                Spectrum old_optical_step = optical_step, old_optical_depth = optical_depth;
+                Float old_desired_density = desired_density;
 
-                if (any(optical_depth_needs_correction)) {
-                    Float interp(1.0f);
-                    masked(interp, optical_depth_needs_correction) = index_spectrum(desired_density - optical_depth, channel) / index_spectrum(optical_step, channel);
-                    interp        = clamp(interp, 0.f, 1.f);
+                if (any_or<true>(optical_depth_needs_correction)) {
+                    if (m_use_bisection) {
+                        Mask not_found_depth = optical_depth_needs_correction;
+                        UInt32 iters_used = 0;
+                        // Bisection method to find the point at which the optical thickness matches the target
+                        auto [a_depth, a_dt, a_ndt] = integration_step(df_opt, curr_dt * 1.f,    optical_depth_needs_correction, false);
+                        auto [b_depth, b_dt, b_ndt] = integration_step(df_opt, curr_dt * 0.f,    optical_depth_needs_correction, false);
+                        while (any(not_found_depth)) {
+                            Float half_step = (detach(b_dt) + detach(a_dt)) * 0.5f;
+                            // Float half_step = (index_spectrum(desired_density - (optical_depth + a_depth), channel) / index_spectrum(b_depth - a_depth, channel)) * (detach(b_dt) - detach(a_dt));
+                            auto [m_depth, m_dt, m_ndt] = integration_step(df_opt, half_step, not_found_depth, use_adaptive_sampling);
+                            Mask upper_half = index_spectrum(m_depth, channel) > index_spectrum(desired_density - (optical_depth + a_depth), channel);
+                            upper_half |= m_dt <= half_step;
+                            std::tie(a_depth, a_dt, a_ndt) = std::make_tuple(
+                                select(upper_half, m_depth, a_depth),
+                                select(upper_half, m_dt,    a_dt),
+                                select(upper_half, m_ndt,   a_ndt)
+                            );
+                            std::tie(b_depth, b_dt, b_ndt) = std::make_tuple(
+                                select(upper_half, b_depth, m_depth),
+                                select(upper_half, b_dt,    m_dt),
+                                select(upper_half, b_ndt,   m_ndt)
+                            );
+                            masked(iters_used, not_found_depth) += 1;
+                            not_found_depth &= index_spectrum(enoki::abs(b_depth - a_depth), channel) >= m_atol && iters_used < 4;
+                            // std::ostringstream oss;
+                            // oss << "[main volume bisection iter]: " << a_dt - b_dt << ", " << m_atol * 2.f;
+                            // Log(Debug, "%s", oss.str());
+                        }
+                        masked(optical_step, optical_depth_needs_correction) = a_depth;
+                        masked(curr_dt,      optical_depth_needs_correction) = a_dt;
+                        masked(next_dt,      optical_depth_needs_correction) = a_ndt;
+                    } else {
+                        Float interp(1.0f);
+                        // Simple linear interpolation assuming constant optical thickness
+                        masked(interp, optical_depth_needs_correction && index_spectrum(optical_step, channel) > 0.f) = index_spectrum(desired_density - optical_depth, channel) / index_spectrum(optical_step, channel);
+                        // masked(interp, optical_depth_needs_correction && !medium->is_homogeneous()) *= 0.95f;
+                        interp = clamp(interp, 0.f, 1.f);
 
-                    // Sample new points based on updated step
-                    auto [corr_next_depth, corr_curr_dt, corr_next_dt] = integration_step(df_opt, curr_dt * interp * 0.9f, optical_depth_needs_correction, false);
-                    masked(optical_step, optical_depth_needs_correction) = corr_next_depth;
-                    masked(next_dt, optical_depth_needs_correction)      = corr_next_dt;
-                    reached_density |= optical_depth_needs_correction && (corr_curr_dt >= curr_dt * interp - math::RayEpsilon<Float>);
-                    masked(curr_dt, optical_depth_needs_correction)      = corr_curr_dt;
+                        // Sample new points based on updated step
+                        auto [corr_next_depth, corr_curr_dt, corr_next_dt]   = integration_step(df_opt, curr_dt * interp, optical_depth_needs_correction, use_adaptive_sampling);
+                        masked(optical_step, optical_depth_needs_correction) = corr_next_depth;
+                        masked(next_dt,      optical_depth_needs_correction) = corr_next_dt;
+                        masked(curr_dt,      optical_depth_needs_correction) = corr_curr_dt;
+                    }
                 }
                 // ------------------------------------------------------- //
                 masked(dt, iteration_mask) = curr_dt;
 
-                // auto [next_rad, curr_dt_ignored, next_dt_ignored] = integration_step(df_rad, dt, iteration_mask, false);
-                // masked(total_radiance, iteration_mask) += exp(-optical_depth) * next_rad;
+                // Update accumulators and ray position
+                masked(current_flight_distance, iteration_mask) += dt;
+                masked(optical_depth, iteration_mask)           += optical_step;
+                masked(mi.t, iteration_mask)                    += dt;
+                masked(mi.p, iteration_mask)                     = ray(current_flight_distance + mi.mint);
+                reached_density                                 |= optical_depth_needs_correction && (desired_density - index_spectrum(optical_depth, channel) < math::RayEpsilon<Float>);
 
                 // {
                 //     std::ostringstream oss;
-                //     oss << "[main volume transport iter]: " << optical_depth_needs_correction << ", " << reached_density << ", " << next_dt << ", " << curr_dt << ", " << optical_step << ", " << channel << ", " << iteration_mask << ", " << current_flight_distance << ", " << optical_depth;
+                //     oss << "[main volume transport iter]: " << desired_density << ", " << stratified_sample_count << ", " << optical_depth_needs_correction << ", " << reached_density << ", " << next_dt << ", " << curr_dt << ", " << optical_step << ", " << channel << ", " << iteration_mask << ", " << current_flight_distance << ", " << optical_depth;
                 //     Log(Debug, "%s", oss.str());
                 // }
-
-                // Update accumulators and ray position
-                masked(current_flight_distance, iteration_mask) += dt;
-                masked(optical_depth, iteration_mask) += optical_step;
-                masked(mi.t, iteration_mask) += dt;
-                masked(mi.p, iteration_mask) = ray(current_flight_distance + mi.mint);
 
                 // Update step size for next iteration
                 // If the volume is inhomogeneous, we use the smaller of the adaptive step or the remaining distance
@@ -303,9 +392,19 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 //     terminate the iteration (current_flight_distance == max_flight_distance)
                 //     or we take a step to close the gap between max_flight_distance and current_flight_distance
                 if (m_use_adaptive_sampling) {
-                    masked(dt, iteration_mask) = min(max_flight_distance - current_flight_distance, next_dt);
+                    masked(dt, iteration_mask) = max_flight_distance - current_flight_distance;
+                    masked(dt, iteration_mask && !medium->is_homogeneous()) = min(dt, next_dt);
+                    masked(dt, iteration_mask &&  medium->is_homogeneous()) = min(dt, desired_density / index_spectrum(local_st, channel));
                 } else {
-                    masked(dt, iteration_mask) = min(max_flight_distance - current_flight_distance, m_volume_step_size);
+                    masked(dt, iteration_mask) = max_flight_distance - current_flight_distance;
+                    masked(dt, iteration_mask && !medium->is_homogeneous()) = min(dt, m_volume_step_size);
+                    masked(dt, iteration_mask &&  medium->is_homogeneous()) = min(dt, desired_density / index_spectrum(local_st, channel));
+                }
+
+                if (any(optical_step != optical_step)) {
+                        std::ostringstream oss;
+                        oss << "[main volume transport error]: " << old_desired_density << ", " << desired_density << ", " << optical_depth_needs_correction << ", " << reached_density << ", " << dt << ", " << next_dt << ", " << curr_dt << ", " << old_optical_step << ", " << optical_step << ", " << channel << ", " << iteration_mask << ", " << current_flight_distance << ", " << old_optical_depth << ", " << optical_depth;
+                        Log(Warn, "%s", oss.str());
                 }
 
                 // Update iteration mask
@@ -313,17 +412,24 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 iteration_mask &= (current_flight_distance < max_flight_distance - math::RayEpsilon<Float>) && !reached_density;
             }
 
+            masked(mi.p, active_medium) = ray(current_flight_distance + mi.mint);
             std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, active_medium);
             local_radiance = medium->get_radiance(mi, active_medium);
             tr = exp(-optical_depth);
             Spectrum path_pdf = select(mi.t < max_flight_distance, tr * local_st, tr);
             Float tr_pdf   = index_spectrum(path_pdf, channel);
 
-            masked(mi.t, active_medium && mi.t >= max_flight_distance) = math::Infinity<Float>;
-            masked(mi.t, active_medium && mi.t >= si.t) = math::Infinity<Float>;
-
             masked(throughput, active_medium) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
             masked(result,     active_medium) += throughput * local_radiance * (local_st - local_ss);
+
+            masked(mi.t, active_medium && mi.t >= max_flight_distance) = math::Infinity<Float>;
+            masked(mi.t, active_medium && mi.t >= si.t)                = math::Infinity<Float>;
+            
+            if (any(tr != tr)) {
+                    std::ostringstream oss;
+                    oss << "[main volume transport error]: " << desired_density << ", " << reached_density << ", " << optical_step << ", " << channel << ", " << iteration_mask << ", " << current_flight_distance << ", " << optical_depth;
+                    Log(Warn, "%s", oss.str());
+            }
 
             needs_intersection &= !active_medium;
 
@@ -844,7 +950,7 @@ MTS_DECLARE_CLASS()
 protected:
 float m_volume_step_size, m_rtol, m_atol;
 int m_stratified_samples;
-bool m_use_adaptive_sampling;
+bool m_use_adaptive_sampling, m_use_bisection;
 };
 
 MTS_IMPLEMENT_CLASS_VARIANT(RaymarchingPathIntegrator, MonteCarloIntegrator);
