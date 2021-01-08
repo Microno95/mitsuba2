@@ -54,7 +54,7 @@ MediumInteraction3f sample_raymarched_interaction(const Ray3f &ray,
     MTS_MASKED_FUNCTION(ProfilerPhase::MediumSample, active);
 
     // initialize basic medium interaction fields
-    MediumInteraction3f mi;
+    MediumInteraction3f mi = zero<MediumInteraction3f>();
     mi.sh_frame    = Frame3f(ray.d);
     mi.wi          = -ray.d;
     mi.time        = ray.time;
@@ -69,6 +69,12 @@ MediumInteraction3f sample_raymarched_interaction(const Ray3f &ray,
     mint = max(ray.mint, mint);
     maxt = min(ray.maxt, maxt);
 
+    if (any(!enoki::isfinite(mint) && active)) {
+        std::ostringstream oss;
+        oss << "[medium interaction error]: " << ray << std::endl << medium << std::endl << channel << std::endl << active << std::endl;
+        Log(Error, "%s", oss.str());
+    }
+
     // Sampling based on infinite homogeneous medium assumption
     Float sampled_t = mint;
     Mask valid_mi   = active && (sampled_t <= maxt);
@@ -77,8 +83,8 @@ MediumInteraction3f sample_raymarched_interaction(const Ray3f &ray,
     mi.medium       = medium;
     mi.mint         = mint;
     mi.maxt         = maxt;
-    std::tie(mi.sigma_s, mi.sigma_n, mi.sigma_t) = medium->get_scattering_coefficients(mi, mint < maxt);
-    mi.radiance            = medium->get_radiance(mi, mint < maxt);
+    std::tie(mi.sigma_s, mi.sigma_n, mi.sigma_t) = medium->get_scattering_coefficients(mi, active);
+    mi.radiance            = medium->get_radiance(mi, active);
     mi.combined_extinction = medium->get_combined_extinction(mi, active);
     return mi;
 }
@@ -259,8 +265,8 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
 
         if (any_or<true>(active_medium)) {
             mi = sample_raymarched_interaction(ray, medium, channel, active_medium);
-            masked(ray.maxt, active_medium && medium->is_homogeneous()) = mi.maxt;
-            Mask intersect = needs_intersection || active_medium;
+            masked(ray.maxt, active_medium && medium->is_homogeneous() && mi.is_valid()) = mi.maxt;
+            Mask intersect = needs_intersection && active_medium;
 
             if (any_or<true>(intersect)) {
                 masked(si, intersect) = scene->ray_intersect(ray, intersect);
@@ -441,9 +447,9 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
             masked(depth, act_medium_scatter) += 1;
             masked(throughput, act_medium_scatter) *= local_ss;
 
-            masked(ray.o, active_medium)    = ray(mi.t);
-            masked(ray.mint, active_medium) = 0.f;
-            masked(si.t, active_medium)     = si.t - mi.t;
+            masked(ray.o,    act_medium_scatter) = ray(mi.t);
+            masked(ray.mint, act_medium_scatter) = 0.f;
+            masked(si.t,     act_medium_scatter) = si.t - mi.t;
 
             // {
             //     std::ostringstream oss;
@@ -586,7 +592,7 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
     Float total_dist = 0.f;
     SurfaceInteraction3f si = zero<SurfaceInteraction3f>();
     si.t = math::Infinity<Float>;
-    Mask needs_intersection = true, use_adaptive_sampling = m_use_adaptive_sampling;
+    Mask needs_intersection = true;
     while (any(active)) {
         Float remaining_dist = ds.dist * (1.f - math::ShadowEpsilon<Float>) - total_dist;
         ray.maxt = remaining_dist;
@@ -602,7 +608,7 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
             // Get raymarching interaction
             auto mi = sample_raymarched_interaction(ray, medium, channel, active_medium);
             masked(ray.maxt, active_medium && medium->is_homogeneous()) = mi.maxt;
-            Mask intersect = needs_intersection || active_medium;
+            Mask intersect = needs_intersection && active_medium;
 
             if (any_or<true>(intersect)) {
                 masked(si, intersect) = scene->ray_intersect(ray, intersect);
@@ -656,7 +662,7 @@ sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction,
             while (any(iteration_mask)) {
                 MTS_MASKED_FUNCTION(ProfilerPhase::MediumRaymarch, iteration_mask);
             
-                auto [next_depth, curr_dt, next_dt] = integration_step(df_opt, dt, iteration_mask, use_adaptive_sampling);
+                auto [next_depth, curr_dt, next_dt] = integration_step(df_opt, dt, iteration_mask, m_use_adaptive_sampling);
                 masked(optical_step, iteration_mask) = next_depth;
 
                 // Update accumulators and ray position
@@ -767,12 +773,12 @@ evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
         Mask escaped_medium = false;
         Mask active_medium  = active && neq(medium, nullptr);
         Mask active_surface = active && !active_medium;
-        SurfaceInteraction3f si_medium;
+        SurfaceInteraction3f si_medium = zero<SurfaceInteraction3f>();
 
         if (any_or<true>(active_medium)) {
             auto mi = sample_raymarched_interaction(ray, medium, channel, active_medium);
             masked(ray.maxt, active_medium && medium->is_homogeneous()) = mi.maxt;
-            Mask intersect = needs_intersection || active_medium;
+            Mask intersect = needs_intersection && active_medium;
 
             if (any_or<true>(intersect)) {
                 masked(si, intersect) = scene->ray_intersect(ray, intersect);
