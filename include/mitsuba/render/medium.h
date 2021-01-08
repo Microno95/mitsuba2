@@ -12,26 +12,40 @@ class MTS_EXPORT_RENDER Medium : public Object {
 public:
     MTS_IMPORT_TYPES(PhaseFunction, Sampler, Scene, Texture);
 
-    /// Intersets a ray with the medium's bounding box
-    virtual std::tuple<Mask, Float, Float>
-    intersect_aabb(const Ray3f &ray) const = 0;
+    /** 
+     * \brief Intersects a ray with the medium's bounding box
+     * 
+     * \return  The rays intersection points with the medium's bounding box
+     */
+    virtual std::tuple<Mask, Float, Float> intersect_aabb(const Ray3f &ray) const = 0;
 
-    /// Returns the medium's majorant used for delta tracking
-    virtual UnpolarizedSpectrum
-    get_combined_extinction(const MediumInteraction3f &mi,
+
+    /** 
+     * \brief Returns the medium's majorant used for delta tracking
+     * 
+     * \return  The medium's majorant used for delta tracking
+     */
+    virtual UnpolarizedSpectrum get_combined_extinction(const MediumInteraction3f &mi,
                             Mask active = true) const = 0;
 
-    /// Returns the medium coefficients Sigma_s, Sigma_n and Sigma_t evaluated
-    /// at a given MediumInteraction mi
-    virtual std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum,
-                       UnpolarizedSpectrum>
-    get_scattering_coefficients(const MediumInteraction3f &mi,
+    /** 
+     * \brief Returns the medium coefficients Sigma_s, Sigma_n and Sigma_t evaluated
+     * at a given MediumInteraction mi
+     * 
+     * \return  the medium coefficients Sigma_s, Sigma_n and Sigma_t evaluated
+     * at a given MediumInteraction mi
+     */
+    virtual std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum> get_scattering_coefficients(const MediumInteraction3f &mi,
                                 Mask active = true) const = 0;
 
-    /// Returns the medium radiant emission evaluated
-    /// at a given MediumInteraction mi
-    virtual UnpolarizedSpectrum
-    get_radiance(const MediumInteraction3f &mi,
+    /** 
+     * \brief Returns the medium radiant emission evaluated
+     * at a given MediumInteraction mi
+     * 
+     * \return  This method returns an UnpolarizedSpectrum containing the medium
+     *          emission.
+     */
+    virtual UnpolarizedSpectrum get_radiance(const MediumInteraction3f &mi,
                                 Mask active = true) const = 0;
 
     /**
@@ -71,8 +85,7 @@ public:
      * (Transmittance, Radiant Emission, PDF).
      *
      */
-    std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum>
-    eval_tr_eps_and_pdf(const MediumInteraction3f &mi,
+    std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum> eval_tr_eps_and_pdf(const MediumInteraction3f &mi,
                         const SurfaceInteraction3f &si, Mask active) const;
 
     /// Return the phase function of this medium
