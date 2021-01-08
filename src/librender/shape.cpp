@@ -281,11 +281,12 @@ MTS_VARIANT void Shape<Float, Spectrum>::optix_prepare_ias(const OptixDeviceCont
 MTS_VARIANT void Shape<Float, Spectrum>::optix_build_input(OptixBuildInput &build_input) const {
     build_input.type = OPTIX_BUILD_INPUT_TYPE_CUSTOM_PRIMITIVES;
     // Assumes the aabb is always the first member of the data struct
-    build_input.aabbArray.aabbBuffers   = (CUdeviceptr*) &m_optix_data_ptr;
-    build_input.aabbArray.numPrimitives = 1;
-    build_input.aabbArray.strideInBytes = sizeof(OptixAabb);
-    build_input.aabbArray.flags         = optix_geometry_flags;
-    build_input.aabbArray.numSbtRecords = 1;
+    build_input.customPrimitiveArray.aabbBuffers =
+        (CUdeviceptr *) &m_optix_data_ptr;
+    build_input.customPrimitiveArray.numPrimitives = 1;
+    build_input.customPrimitiveArray.strideInBytes = sizeof(OptixAabb);
+    build_input.customPrimitiveArray.flags         = optix_geometry_flags;
+    build_input.customPrimitiveArray.numSbtRecords = 1;
 }
 #endif
 

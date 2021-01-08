@@ -170,7 +170,7 @@ MTS_VARIANT void Scene<Float, Spectrum>::accel_init_gpu(const Properties &/*prop
     #else
         pipeline_link_options.debugLevel             = OPTIX_COMPILE_DEBUG_LEVEL_NONE;
     #endif
-        pipeline_link_options.overrideUsesMotionBlur = false;
+        //pipeline_link_options.overrideUsesMotionBlur = false;
         rt_check_log(optixPipelineCreate(
             s.context,
             &pipeline_compile_options,
@@ -271,8 +271,8 @@ MTS_VARIANT void Scene<Float, Spectrum>::accel_parameters_changed_gpu() {
         build_input.type = OPTIX_BUILD_INPUT_TYPE_INSTANCES;
         build_input.instanceArray.instances = (CUdeviceptr) d_ias;
         build_input.instanceArray.numInstances = (unsigned int) ias.size();
-        build_input.instanceArray.aabbs = 0;
-        build_input.instanceArray.numAabbs = 0;
+        //build_input.instanceArray.aabbs = 0;
+        //build_input.instanceArray.numAabbs = 0;
 
         OptixAccelBufferSizes buffer_sizes;
         rt_check(optixAccelComputeMemoryUsage(s.context, &accel_options, &build_input, 1, &buffer_sizes));
