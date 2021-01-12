@@ -105,10 +105,12 @@ public:
         ref<Object> result;
         switch (m_metadata.channel_count) {
             case 1:
+                // Log(Info, "Instantiating Grid Volume: %d", m_metadata.channel_count);
                 result = m_raw ? (Object *) new Impl<1, true>(m_props, m_metadata, m_data, m_filter_type, m_wrap_mode)
                                : (Object *) new Impl<1, false>(m_props, m_metadata, m_data, m_filter_type, m_wrap_mode);
                 break;
             case 3:
+                // Log(Info, "Instantiating Grid Volume: %d", m_metadata.channel_count);
                 result = m_raw ? (Object *) new Impl<3, true>(m_props, m_metadata, m_data, m_filter_type, m_wrap_mode)
                                : (Object *) new Impl<3, false>(m_props, m_metadata, m_data, m_filter_type, m_wrap_mode);
                 break;
@@ -371,7 +373,7 @@ public:
 
     void parameters_changed(const std::vector<std::string> &/*keys*/) override {
         auto new_size = data_size();
-        if (m_size != new_size) {
+        if (m_size * m_metadata.channel_count != new_size) {
             // Only support a special case: resolution doubling along all axes
             if (new_size != m_size * 8)
                 Throw("Unsupported GridVolume data size update: %d -> %d. Expected %d or %d "
@@ -385,7 +387,7 @@ public:
         auto sum = hsum(hsum(detach(m_data)));
         m_metadata.mean = (double) enoki::slice(sum, 0) / (double) (m_size * 3);
         if (!m_fixed_max) {
-            auto maximum = hmax(hmax(m_data));
+            auto maximum = hmax(hmax(enoki::detach(m_data)));
             m_metadata.max = slice(maximum, 0);
         }
     }
