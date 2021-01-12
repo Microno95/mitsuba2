@@ -275,11 +275,12 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
             needs_intersection &= !intersect;
 
             // Get maximum flight distance of ray
-            Float max_flight_distance     = min(si.t, mi.maxt) - mi.mint;
-            Float current_flight_distance = max(mi.t - mi.mint, 0.f);
-            Float dt                      = max_flight_distance - current_flight_distance;
-            Float max_throughput          = sampler->next_1d(active_medium);
-            Float desired_density         = -enoki::log(max_throughput);
+            Float max_flight_distance      = min(si.t, mi.maxt) - mi.mint;
+            Float current_flight_distance  = max(mi.t - mi.mint, 0.f);
+            Float dt                       = max_flight_distance - current_flight_distance;
+            UInt32 stratified_sample_count = 0;
+            Float max_throughput           = (sampler->next_1d(active_medium) + (m_stratified_samples - stratified_sample_count - 1.0f)) / m_stratified_samples;
+            Float desired_density          = -enoki::log(max_throughput);
 
             // Instantiate masks that track which rays are able to continue marching
             Mask iteration_mask = active_medium;
@@ -384,7 +385,21 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 masked(optical_depth, iteration_mask)           += optical_step;
                 masked(mi.t, iteration_mask)                    += dt;
                 masked(mi.p, iteration_mask)                     = ray(current_flight_distance + mi.mint);
-                reached_density                                 |= optical_depth_needs_correction && (desired_density - index_spectrum(optical_depth, channel) < math::RayEpsilon<Float>);
+                Mask sample_radiance                             = optical_depth_needs_correction && (desired_density - index_spectrum(optical_depth, channel) < math::RayEpsilon<Float>);
+
+                if (any_or<true>(sample_radiance)) {
+                    std::tie(local_ss, local_sn, local_st)            = medium->get_scattering_coefficients(mi, sample_radiance);
+                    local_radiance                                    = medium->get_radiance(mi, sample_radiance);
+                    tr                                                = exp(-optical_depth);
+                    Spectrum path_pdf                                 = select(mi.t < max_flight_distance, tr * local_st, tr) * m_stratified_samples;
+                    Float tr_pdf                                      = index_spectrum(path_pdf, channel);
+                    masked(result, sample_radiance)                  += select(tr_pdf > 0.f, throughput * tr * local_radiance * (local_st - local_ss) / tr_pdf, 0.f);
+                    masked(stratified_sample_count, sample_radiance) += 1;
+                    masked(max_throughput, sample_radiance)           = (sampler->next_1d(sample_radiance) + (m_stratified_samples - stratified_sample_count - 1.0f)) / m_stratified_samples;
+                    masked(desired_density, sample_radiance)          = -enoki::log(max_throughput);
+                }
+                
+                reached_density |= sample_radiance && (stratified_sample_count == m_stratified_samples);
 
                 // {
                 //     std::ostringstream oss;
@@ -422,11 +437,11 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
             std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, active_medium);
             local_radiance = medium->get_radiance(mi, active_medium);
             tr = exp(-optical_depth);
-            Spectrum path_pdf = select(mi.t < max_flight_distance, tr * local_st, tr);
-            Float tr_pdf   = index_spectrum(path_pdf, channel);
+            Spectrum path_pdf = select(mi.t < max_flight_distance, tr * local_st, tr) * m_stratified_samples;
+            Float tr_pdf      = index_spectrum(path_pdf, channel);
 
-            masked(throughput, active_medium) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
-            masked(result,     active_medium) += throughput * local_radiance * (local_st - local_ss);
+            masked(result, active_medium)     += select(tr_pdf > 0.f, (m_stratified_samples - stratified_sample_count) * throughput * tr * local_radiance * (local_st - local_ss) / tr_pdf, 0.f);
+            masked(throughput, active_medium) *= select(tr_pdf > 0.f, (m_stratified_samples - stratified_sample_count + 1.0f) * tr / tr_pdf, 0.f);
 
             masked(mi.t, active_medium && mi.t >= max_flight_distance) = math::Infinity<Float>;
             masked(mi.t, active_medium && mi.t >= si.t)                = math::Infinity<Float>;
