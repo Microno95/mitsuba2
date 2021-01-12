@@ -208,9 +208,16 @@ MTS_PY_EXPORT(MediumInteraction) {
         py::class_<MediumInteraction3f, Interaction3f>(m, "MediumInteraction3f",
                                                         D(MediumInteraction))
         // Members
-        .def_field(MediumInteraction3f, medium,     D(MediumInteraction, medium))
-        .def_field(MediumInteraction3f, sh_frame,   D(MediumInteraction, sh_frame))
-        .def_field(MediumInteraction3f, wi,         D(MediumInteraction, wi))
+        .def_field(MediumInteraction3f, medium,              D(MediumInteraction, medium))
+        .def_field(MediumInteraction3f, sh_frame,            D(MediumInteraction, sh_frame))
+        .def_field(MediumInteraction3f, wi,                  D(MediumInteraction, wi))
+        .def_field(MediumInteraction3f, sigma_s)
+        .def_field(MediumInteraction3f, sigma_n)
+        .def_field(MediumInteraction3f, sigma_t)
+        .def_field(MediumInteraction3f, radiance)
+        .def_field(MediumInteraction3f, combined_extinction)
+        .def_field(MediumInteraction3f, mint)
+        .def_field(MediumInteraction3f, maxt)
 
         // Methods
         .def(py::init<>(), D(MediumInteraction, MediumInteraction))
