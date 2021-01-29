@@ -85,7 +85,7 @@ public:
                 scaled_data_ptr += 4;
             }
             m_metadata.mean = mean;
-            m_metadata.max = max;
+            m_metadata.max  = max;
             m_data = DynamicBuffer<Float>::copy(scaled_data.get(), size * 4);
         } else {
             m_data = DynamicBuffer<Float>::copy(raw_data.get(), size * m_metadata.channel_count);

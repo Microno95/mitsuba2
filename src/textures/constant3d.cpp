@@ -12,6 +12,11 @@ public:
 
     ConstVolume(const Properties &props) : Base(props) {
         m_color = props.texture<Texture>("color", 1.f);
+        if (props.has_property("max_value")) {
+            m_max = props.float_("max_value");
+        } else {
+            m_max = m_color->mean();
+        }
     }
 
     UnpolarizedSpectrum eval(const Interaction3f &it, Mask active) const override {
@@ -29,12 +34,12 @@ public:
         si.uv          = Point2f(0.f, 0.f);
         si.wavelengths = it.wavelengths;
         si.time        = it.time;
-        auto result = m_color->eval(si, active);
+        auto result    = m_color->eval(si, active);
         return result;
     }
 
 
-    ScalarFloat max() const override { NotImplementedError("max"); }
+    ScalarFloat max() const override { return m_max; }
 
     void traverse(TraversalCallback *callback) override {
         callback->put_object("color", m_color.get());
@@ -52,6 +57,7 @@ public:
     MTS_DECLARE_CLASS()
 protected:
     ref<Texture> m_color;
+    float m_max;
 };
 
 MTS_IMPLEMENT_CLASS_VARIANT(ConstVolume, Volume)
