@@ -63,7 +63,7 @@ MTS_PY_EXPORT(Medium) {
                  "active"_a = true)
             .def("sample_interaction", vectorize(&Medium::sample_interaction),
                  "ray"_a, "sample"_a, "channel"_a, "active"_a = true)
-            .def("eval_tr_eps_and_pdf", vectorize(&Medium::eval_tr_eps_and_pdf),
+            .def("eval_tr_and_pdf", vectorize(&Medium::eval_tr_and_pdf),
                  "mi"_a, "si"_a, "active"_a = true)
             .def_method(Medium, phase_function)
             .def_method(Medium, use_emitter_sampling)
@@ -110,10 +110,10 @@ MTS_PY_EXPORT(Medium) {
             }),
             "ptr"_a, "ray"_a, "sample"_a, "channel"_a, "active"_a = true);
         medium.def_static(
-            "eval_tr_eps_and_pdf_vec",
+            "eval_tr_and_pdf_vec",
             vectorize([](const MediumPtr &ptr, const MediumInteraction3f &mi,
                          const SurfaceInteraction3f &si, Mask active) {
-                return ptr->eval_tr_eps_and_pdf(mi, si, active);
+                return ptr->eval_tr_and_pdf(mi, si, active);
             }),
             "ptr"_a, "mi"_a, "si"_a, "active"_a = true);
     }

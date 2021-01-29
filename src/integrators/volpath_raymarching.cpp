@@ -391,15 +391,22 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                     std::tie(local_ss, local_sn, local_st)            = medium->get_scattering_coefficients(mi, sample_radiance);
                     local_radiance                                    = medium->get_radiance(mi, sample_radiance);
                     tr                                                = exp(-optical_depth);
-                    Spectrum path_pdf                                 = select(mi.t < max_flight_distance, tr * local_st, tr) * m_stratified_samples;
+                    Int32 corr_factor                                 = (m_stratified_samples - stratified_sample_count);
+                    Spectrum path_pdf                                 = select(mi.t < max_flight_distance, tr * local_st * (0.5f * corr_factor * (corr_factor + 1.f)), tr) / m_stratified_samples;
                     Float tr_pdf                                      = index_spectrum(path_pdf, channel);
-                    masked(result, sample_radiance)                  += select(tr_pdf > 0.f, throughput * tr * local_radiance * (local_st - local_ss) / tr_pdf, 0.f);
-                    masked(stratified_sample_count, sample_radiance) += 1;
-                    masked(max_throughput, sample_radiance)           = (sampler->next_1d(sample_radiance) + (m_stratified_samples - stratified_sample_count - 1.0f)) / m_stratified_samples;
-                    masked(desired_density, sample_radiance)          = -enoki::log(max_throughput);
+                    masked(result, sample_radiance && !medium->is_natural()) += select(tr_pdf > 0.f, throughput * tr * local_radiance / tr_pdf, 0.f);
+                    masked(result, sample_radiance &&  medium->is_natural()) += select(tr_pdf > 0.f, throughput * tr * local_radiance * (local_st - local_ss) / tr_pdf, 0.f);
+
+                    Float rr_probability                              = 1.f;
+                    rr_probability                                   /= m_stratified_samples;
+                    Mask rr_stratified                                = sample_radiance && (sampler->next_1d(sample_radiance) > rr_probability);
+                    // masked(throughput, rr_stratified)                /= 1.f - rr_probability;
+                    
+                    reached_density |= sample_radiance && (!rr_stratified || (stratified_sample_count == m_stratified_samples - 1));
+                    masked(stratified_sample_count, sample_radiance && !reached_density) += 1;
+                    masked(max_throughput, sample_radiance && !reached_density)           = (sampler->next_1d(sample_radiance) + (m_stratified_samples - stratified_sample_count - 1.f)) / m_stratified_samples;
+                    masked(desired_density, sample_radiance && !reached_density)          = -enoki::log(max_throughput);
                 }
-                
-                reached_density |= sample_radiance && (stratified_sample_count == m_stratified_samples);
 
                 // {
                 //     std::ostringstream oss;
@@ -437,18 +444,18 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
             std::tie(local_ss, local_sn, local_st) = medium->get_scattering_coefficients(mi, active_medium);
             local_radiance = medium->get_radiance(mi, active_medium);
             tr = exp(-optical_depth);
-            Spectrum path_pdf = select(mi.t < max_flight_distance, tr * local_st, tr) * m_stratified_samples;
+            Spectrum path_pdf = select(mi.t < max_flight_distance, tr * local_st, tr);
             Float tr_pdf      = index_spectrum(path_pdf, channel);
 
-            masked(result, active_medium)     += select(tr_pdf > 0.f, (m_stratified_samples - stratified_sample_count) * throughput * tr * local_radiance * (local_st - local_ss) / tr_pdf, 0.f);
-            masked(throughput, active_medium) *= select(tr_pdf > 0.f, (m_stratified_samples - stratified_sample_count + 1.0f) * tr / tr_pdf, 0.f);
+            // masked(result, active_medium)     += select(tr_pdf > 0.f, (m_stratified_samples - stratified_sample_count) * throughput * tr * local_radiance * (local_st - local_ss) / (tr_pdf * m_stratified_samples), 0.f);
+            masked(throughput, active_medium) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
 
             masked(mi.t, active_medium && mi.t >= max_flight_distance) = math::Infinity<Float>;
             masked(mi.t, active_medium && mi.t >= si.t)                = math::Infinity<Float>;
             
-            if (any(tr != tr)) {
+            if (any(throughput != throughput)) {
                     std::ostringstream oss;
-                    oss << "[main volume transport error]: " << desired_density << ", " << reached_density << ", " << optical_step << ", " << channel << ", " << iteration_mask << ", " << current_flight_distance << ", " << optical_depth;
+                    oss << "[main volume transport error]: " << stratified_sample_count << ", " << desired_density << ", " << reached_density << ", " << optical_step << ", " << channel << ", " << iteration_mask << ", " << current_flight_distance << ", " << optical_depth;
                     Log(Warn, "%s", oss.str());
             }
 

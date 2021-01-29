@@ -79,23 +79,17 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
 }
 
 MTS_VARIANT
-std::tuple<typename Medium<Float, Spectrum>::UnpolarizedSpectrum,
-           typename Medium<Float, Spectrum>::UnpolarizedSpectrum,
-           typename Medium<Float, Spectrum>::UnpolarizedSpectrum,
-           typename Medium<Float, Spectrum>::UnpolarizedSpectrum>
-Medium<Float, Spectrum>::eval_tr_eps_and_pdf(const MediumInteraction3f &mi,
+std::pair<typename Medium<Float, Spectrum>::UnpolarizedSpectrum,
+          typename Medium<Float, Spectrum>::UnpolarizedSpectrum>
+Medium<Float, Spectrum>::eval_tr_and_pdf(const MediumInteraction3f &mi,
                                              const SurfaceInteraction3f &si,
                                              Mask active) const {
     MTS_MASKED_FUNCTION(ProfilerPhase::MediumEvaluate, active);
 
     Float t                       = min(mi.t, si.t) - mi.mint;
     UnpolarizedSpectrum tr        = exp(-t * mi.combined_extinction);
-    //UnpolarizedSpectrum bound_tr  = exp(-select(si.t < mi.maxt, si.t, mi.maxt) * mi.combined_extinction);
-    UnpolarizedSpectrum eps_int   = (mi.radiance / mi.combined_extinction) * (1.f - tr);
-    UnpolarizedSpectrum eps       = mi.radiance;
     UnpolarizedSpectrum pdf       = select(si.t < mi.t, tr, tr * mi.combined_extinction);
-    //masked(pdf, mi.maxt < math::Infinity<Float>) = select(si.t < mi.t, bound_tr / (1 - bound_tr), tr * mi.combined_extinction / (1.0f - bound_tr));
-    return { tr, eps, eps_int, pdf };
+    return { tr, pdf };
 }
 
 MTS_IMPLEMENT_CLASS_VARIANT(Medium, Object, "medium")

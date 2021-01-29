@@ -21,7 +21,17 @@ public:
                      Medium, MediumPtr, PhaseFunctionContext)
 
     EmissiveVolumetricPathIntegrator(const Properties &props) : Base(props) {
-
+        std::string sampling_type = props.string("probability_type", "analog");
+        if (sampling_type == "analog") {
+            m_sampling_type = 0;
+        } else if (sampling_type == "max") {
+            m_sampling_type = 1;
+        } else if (sampling_type == "average") {
+            m_sampling_type = 2;
+        } else {
+            Log(Warn, "Sampling Probability Type %s not recognised, defaulting to \"analog\" sampling", sampling_type);
+            m_sampling_type = 0;
+        }
     }
 
     MTS_INLINE
@@ -53,18 +63,26 @@ public:
             } else {
                 Throw("Invalid probability type:", "%i", probability_type);
             }
-            c = prob_emission + prob_scatter + prob_null;
-            masked(c, eq(c, 0.f)) = 1.0f;
-            prob_emission /= c;
-            prob_scatter /= c;
-            prob_null /= c;
         }
-        masked(weight_emission, prob_emission > 0.f) = (mi.sigma_t - mi.sigma_s) / prob_emission;
+        Mask natural_medium  = mi.medium->is_natural();
+
+        masked(prob_emission, mi.is_valid() && !natural_medium) = 1.f;
+        
+        c = prob_emission + prob_scatter + prob_null;
+        masked(c, eq(c, 0.f)) = 1.0f;
+        prob_emission /= c;
+        prob_scatter  /= c;
+        prob_null     /= c;
+
+        masked(weight_emission, prob_emission > 0.f &&  natural_medium) = (mi.sigma_t - mi.sigma_s) / prob_emission;
+        masked(weight_emission, prob_emission > 0.f && !natural_medium) = 1.f / prob_emission;
         masked(weight_scatter,  prob_scatter > 0.f)  =  mi.sigma_s / prob_scatter;
         masked(weight_null,     prob_null > 0.f)     =  mi.sigma_n / prob_null;
+        
         masked(weight_emission, neq(weight_emission, weight_emission) || !(weight_emission < math::Infinity<Float>)) = 0.f;
         masked(weight_scatter, neq(weight_scatter, weight_scatter) || !(weight_scatter < math::Infinity<Float>)) = 0.f;
         masked(weight_null, neq(weight_null, weight_null) || !(weight_null < math::Infinity<Float>)) = 0.f;
+        
         return { prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null };
     }
 
@@ -88,8 +106,8 @@ public:
                              const Spectrum &throughput) const {
         Float prob_e = 0.f, prob_s = 0.f, prob_n = 0.f;
         prob_e = hmax(abs((sigma_t - sigma_s) * throughput));
-        prob_s = hmax(abs(sigma_s * throughput));
-        prob_n = hmax(abs(sigma_n * throughput));
+        prob_s = hmax(abs( sigma_s * throughput));
+        prob_n = hmax(abs( sigma_n * throughput));
         return { prob_e, prob_s, prob_n};
     }
 
@@ -100,8 +118,8 @@ public:
                                  const Spectrum &throughput) const {
         Float prob_e = 0.f, prob_s = 0.f, prob_n = 0.f;
         prob_e = hmean(abs((sigma_t - sigma_s) * throughput));
-        prob_s = hmean(abs(sigma_s * throughput));
-        prob_n = hmean(abs(sigma_n * throughput));
+        prob_s = hmean(abs( sigma_s * throughput));
+        prob_n = hmean(abs( sigma_n * throughput));
         return {prob_e, prob_s, prob_n} ;
     }
 
@@ -173,7 +191,7 @@ public:
 
                 masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
 
-                auto [tr, eps, eps_int, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, active_medium);
+                auto [tr, free_flight_pdf] = medium->eval_tr_and_pdf(mi, si, active_medium);
                 Float tr_pdf = index_spectrum(free_flight_pdf, channel);
                 //Float tr_pdf = hmean(free_flight_pdf);
                 prev_throughput = throughput;
@@ -185,7 +203,7 @@ public:
 			
             if (any_or<true>(active_medium)) {
                 // Compute emmission, scatter and null event probabilities
-                auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, prev_throughput, channel, 2);
+                auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, prev_throughput, channel, m_sampling_type);
 
                 // Handle absorption, null and real scatter events
                 auto medium_sample_eta   = sampler->next_1d(active_medium);
@@ -199,7 +217,7 @@ public:
                 act_null_scatter   |= null_interaction && active_medium;
 
                 if (any_or<true>(act_emission)) {
-                    masked(result, act_emission) += weight_emission * throughput * mi.radiance;
+                    masked(result, act_emission)     += weight_emission * throughput * mi.radiance;
                     masked(throughput, act_emission) *= prob_emission;
                     
                     // Move the ray along
@@ -213,7 +231,7 @@ public:
                 // Dont estimate lighting if we exceeded number of bounces
                 active &= depth < (uint32_t) m_max_depth;
 
-                // active &= !act_emission;
+                active &= !act_emission;
 				
 				act_medium_scatter &= active;
 				act_null_scatter   &= active;
@@ -408,7 +426,7 @@ public:
                     masked(ray.mint, active_medium) = 0.f;
                     masked(si.t, active_medium) = si.t - mi.t;
                     // Compute emmission, scatter and null event probabilities
-                    auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, prev_transmittance, channel, 2);
+                    auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, prev_transmittance, channel, m_sampling_type);
 
                     masked(transmittance, active_medium) *= mi.sigma_n;
                 }
@@ -494,7 +512,7 @@ public:
                 Mask is_spectral = medium->has_spectral_extinction() && active_medium;
                 Mask not_spectral = !is_spectral && active_medium;
 
-                auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, transmittance, channel, 2);
+                auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, transmittance, channel, m_sampling_type);
 
                 if (any_or<true>(is_spectral)) {
                     Float t      = min(remaining_dist, min(mi.t, si.t)) - mi.mint;
@@ -594,7 +612,7 @@ public:
                 Mask is_spectral = medium->has_spectral_extinction() && active_medium;
                 Mask not_spectral = !is_spectral && active_medium;
                 if (any_or<true>(is_spectral)) {
-                    auto [tr, eps, eps_int, free_flight_pdf] = medium->eval_tr_eps_and_pdf(mi, si, is_spectral);
+                    auto [tr, free_flight_pdf] = medium->eval_tr_and_pdf(mi, si, is_spectral);
                     Float tr_pdf = index_spectrum(free_flight_pdf, channel);
                     //Float tr_pdf       = hmin(free_flight_pdf);
                     prev_transmittance = transmittance;
@@ -610,7 +628,7 @@ public:
                     masked(ray.mint, active_medium) = 0.f;
                     masked(si.t, active_medium) = si.t - mi.t;
                     // Compute emmission, scatter and null event probabilities
-                    auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, prev_transmittance, channel, 2);
+                    auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, prev_transmittance, channel, m_sampling_type);
 
                     masked(transmittance, active_medium) *= mi.sigma_n;
                 }
@@ -668,8 +686,9 @@ public:
         return tfm::format("EmissiveVolumetricSimplePathIntegrator[\n"
                            "  max_depth = %i,\n"
                            "  rr_depth = %i\n"
+                           "  sampling_type = %i\n"
                            "]",
-                           m_max_depth, m_rr_depth);
+                           m_max_depth, m_rr_depth, m_sampling_type);
     }
 
     Float mis_weight(Float pdf_a, Float pdf_b) const {
@@ -679,6 +698,8 @@ public:
     };
 
     MTS_DECLARE_CLASS()
+protected:
+    uint32_t m_sampling_type;
 };
 
 MTS_IMPLEMENT_CLASS_VARIANT(EmissiveVolumetricPathIntegrator, MonteCarloIntegrator);

@@ -72,7 +72,7 @@ public:
     /**
      * \brief Compute the transmittance, radiant emission and PDF
      *
-     * This function evaluates the transmittance, radiant emission and PDF of 
+     * This function evaluates the transmittance\ and PDF of 
      * sampling a certain free-flight distance The returned PDF takes into account
      * if a medium interaction occured (mi.t <= si.t) or the ray left the medium 
      * (mi.t > si.t)
@@ -82,10 +82,10 @@ public:
      * the wavelength.
      *
      * \return   This method returns a tuple of 
-     * (Transmittance, Radiant Emission, PDF).
+     * (Transmittance, PDF).
      *
      */
-    std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum> eval_tr_eps_and_pdf(const MediumInteraction3f &mi,
+    std::pair<UnpolarizedSpectrum, UnpolarizedSpectrum> eval_tr_and_pdf(const MediumInteraction3f &mi,
                         const SurfaceInteraction3f &si, Mask active) const;
 
     /// Return the phase function of this medium
@@ -99,9 +99,22 @@ public:
     /// Returns whether this medium is homogeneous
     MTS_INLINE bool is_homogeneous() const { return m_is_homogeneous; }
 
+    /// Returns whether this medium has an emission proportional to its absorption
+    MTS_INLINE bool is_natural() const { return m_is_natural; }
+
     /// Returns whether this medium has a spectrally varying extinction
     MTS_INLINE bool has_spectral_extinction() const {
         return m_has_spectral_extinction;
+    }
+
+    /// Returns whether this medium has absorption
+    MTS_INLINE bool has_absorption() const {
+        return m_has_absorption;
+    }
+
+    /// Returns whether this medium has scattering
+    MTS_INLINE bool has_scattering() const {
+        return m_has_scattering;
     }
 
     /// Returns whether this medium has emission
@@ -124,7 +137,8 @@ protected:
 
 protected:
     ref<PhaseFunction> m_phase_function;
-    bool m_sample_emitters, m_is_homogeneous, m_has_spectral_extinction, m_has_emission;
+    bool m_sample_emitters, m_is_homogeneous, m_is_natural, m_has_spectral_extinction,
+         m_has_emission, m_has_absorption, m_has_scattering;
 
     /// Identifier (if available)
     std::string m_id;
@@ -142,13 +156,16 @@ ENOKI_CALL_SUPPORT_TEMPLATE_BEGIN(mitsuba::Medium)
     ENOKI_CALL_SUPPORT_METHOD(phase_function)
     ENOKI_CALL_SUPPORT_METHOD(use_emitter_sampling)
     ENOKI_CALL_SUPPORT_METHOD(is_homogeneous)
+    ENOKI_CALL_SUPPORT_METHOD(is_natural)
     ENOKI_CALL_SUPPORT_METHOD(has_spectral_extinction)
     ENOKI_CALL_SUPPORT_METHOD(get_combined_extinction)
     ENOKI_CALL_SUPPORT_METHOD(get_radiance)
+    ENOKI_CALL_SUPPORT_METHOD(has_absorption)
+    ENOKI_CALL_SUPPORT_METHOD(has_scattering)
     ENOKI_CALL_SUPPORT_METHOD(has_emission)
     ENOKI_CALL_SUPPORT_METHOD(intersect_aabb)
     ENOKI_CALL_SUPPORT_METHOD(sample_interaction)
-    ENOKI_CALL_SUPPORT_METHOD(eval_tr_eps_and_pdf)
+    ENOKI_CALL_SUPPORT_METHOD(eval_tr_and_pdf)
     ENOKI_CALL_SUPPORT_METHOD(get_scattering_coefficients)
     ENOKI_CALL_SUPPORT_TEMPLATE_END(mitsuba::Medium)
 

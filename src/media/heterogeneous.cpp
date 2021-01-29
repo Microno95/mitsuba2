@@ -15,21 +15,30 @@ NAMESPACE_BEGIN(mitsuba)
 template <typename Float, typename Spectrum>
 class HeterogeneousMedium final : public Medium<Float, Spectrum> {
 public:
-    MTS_IMPORT_BASE(Medium, m_is_homogeneous, m_has_spectral_extinction, m_has_emission)
+    MTS_IMPORT_BASE(Medium, m_is_homogeneous, m_has_spectral_extinction, m_is_natural, 
+                    m_has_emission, m_has_absorption, m_has_scattering)
     MTS_IMPORT_TYPES(Scene, Sampler, Texture, Volume)
 
     HeterogeneousMedium(const Properties &props) : Base(props) {
         m_is_homogeneous = false;
+
         m_albedo   = props.volume<Volume>("albedo", 0.75f);
         m_sigmat   = props.volume<Volume>("sigma_t", 1.f);
         m_radiance = props.volume<Volume>("radiance", 0.0f);
 
         m_scale          = props.float_("scale", 1.0f);
         m_emission_scale = props.float_("emission_scale", 1.0f);
+        m_is_natural = props.bool_("is_natural_medium", true);
         m_has_spectral_extinction = props.bool_("has_spectral_extinction", true);
-        m_has_emission = props.bool_("has_emission", true);
+        m_max_density  = m_scale * m_sigmat->max();
 
-        m_max_density = m_scale * m_sigmat->max();
+        m_has_absorption = m_max_density > 0.f;
+        m_has_scattering = (m_max_density * m_albedo->max()) > 0.f;
+        if (m_is_natural) {
+            m_has_emission = (m_scale * m_emission_scale * m_radiance->max()) > 0.f;
+        } else {
+            m_has_emission = (m_emission_scale * m_radiance->max()) > 0.f;
+        }
         m_aabb        = m_sigmat->bbox();
     }
 
