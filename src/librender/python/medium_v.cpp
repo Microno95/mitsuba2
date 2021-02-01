@@ -24,6 +24,13 @@ public:
                                get_combined_extinction, mi, active);
     }
 
+    UnpolarizedSpectrum
+    get_emission_majorant(const MediumInteraction3f &mi,
+                            Mask active = true) const override {
+        PYBIND11_OVERLOAD_PURE(UnpolarizedSpectrum, Medium,
+                               get_emission_majorant, mi, active);
+    }
+
     UnpolarizedSpectrum get_radiance(const MediumInteraction3f &mi,
                                      Mask active = true) const override {
         PYBIND11_OVERLOAD_PURE(UnpolarizedSpectrum, Medium, get_radiance, mi,
