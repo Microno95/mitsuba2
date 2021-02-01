@@ -35,9 +35,11 @@ public:
         m_has_absorption = m_max_density > 0.f;
         m_has_scattering = (m_max_density * m_albedo->max()) > 0.f;
         if (m_is_natural) {
-            m_has_emission = (m_scale * m_emission_scale * m_radiance->max()) > 0.f;
+            m_max_emission = (m_scale * m_emission_scale * m_radiance->max());
+            m_has_emission = m_max_emission > 0.f;
         } else {
-            m_has_emission = (m_emission_scale * m_radiance->max()) > 0.f;
+            m_max_emission = (m_emission_scale * m_radiance->max());
+            m_has_emission = m_max_emission > 0.f;
         }
         m_aabb        = m_sigmat->bbox();
     }
@@ -48,6 +50,14 @@ public:
         // TODO: This could be a spectral quantity (at least in RGB mode)
         MTS_MASKED_FUNCTION(ProfilerPhase::MediumEvaluate, active);
         return m_max_density;
+    }
+
+    UnpolarizedSpectrum
+    get_emission_majorant(const MediumInteraction3f & /* mi */,
+                            Mask active) const override {
+        // TODO: This could be a spectral quantity (at least in RGB mode)
+        MTS_MASKED_FUNCTION(ProfilerPhase::MediumEvaluate, active);
+        return m_max_emission;
     }
 
     std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum>
@@ -98,7 +108,7 @@ private:
     ScalarFloat m_scale, m_emission_scale;
 
     ScalarBoundingBox3f m_aabb;
-    ScalarFloat m_max_density;
+    ScalarFloat m_max_density, m_max_emission;
 };
 
 MTS_IMPLEMENT_CLASS_VARIANT(HeterogeneousMedium, Medium)
