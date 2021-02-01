@@ -56,6 +56,9 @@ MTS_PY_EXPORT(Medium) {
             .def("get_combined_extinction",
                  vectorize(&Medium::get_combined_extinction), "mi"_a,
                  "active"_a = true)
+            .def("get_emission_majorant",
+                 vectorize(&Medium::get_emission_majorant), "mi"_a,
+                 "active"_a = true)
             .def("get_scattering_coefficients",
                  vectorize(&Medium::get_scattering_coefficients), "mi"_a,
                  "active"_a = true)
@@ -87,6 +90,13 @@ MTS_PY_EXPORT(Medium) {
             vectorize([](const MediumPtr &ptr, const MediumInteraction3f &mi,
                          Mask active) {
                 return ptr->get_combined_extinction(mi, active);
+            }),
+            "ptr"_a, "mi"_a, "active"_a = true);
+        medium.def_static(
+            "get_emission_majorant_vec",
+            vectorize([](const MediumPtr &ptr, const MediumInteraction3f &mi,
+                         Mask active) {
+                return ptr->get_emission_majorant(mi, active);
             }),
             "ptr"_a, "mi"_a, "active"_a = true);
         medium.def_static(

@@ -192,9 +192,9 @@ public:
                 auto medium_sample_eta   = sampler->next_1d(active_medium);
                 
                 // Calculate the probability of events using the analog probabilities (proportional to volume parameters sigma_a and sigma_s)
-                Float prob_emission = (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel)) / index_spectrum(mi.combined_extinction, channel);
-                Float prob_scatter  = index_spectrum(mi.sigma_s, channel) / index_spectrum(mi.combined_extinction, channel);
-                Float prob_null     = index_spectrum(mi.sigma_n, channel) / index_spectrum(mi.combined_extinction, channel);
+                Float prob_emission = (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel));
+                Float prob_scatter  =  index_spectrum(mi.sigma_s, channel);
+                Float prob_null     =  index_spectrum(mi.sigma_n, channel);
 
                 Mask natural_medium  = mi.medium->is_natural();
 
@@ -216,27 +216,9 @@ public:
 				
 				if (any_or<true>(act_emission)) {
                     if (any_or<true>(is_spectral)) {
-                        auto prob_emission =  (mi.sigma_t - mi.sigma_s) / mi.combined_extinction;
-                        auto p_over_f_old = p_over_f, p_over_f_nee_old = p_over_f_nee;
-                        update_weights(p_over_f, prob_emission, select(medium->is_natural(), mi.sigma_t - mi.sigma_s, 1.f), channel, is_spectral && act_emission);
-                        update_weights(p_over_f_nee, 1.f, select(medium->is_natural(), mi.sigma_t - mi.sigma_s, 1.f), channel, is_spectral && act_emission);
-                        // update_weights(p_over_f, prob_emission, mi.sigma_t - mi.sigma_s, channel, is_spectral && act_emission);
-                        // update_weights(p_over_f_nee, 1.f, mi.sigma_t - mi.sigma_s, channel, is_spectral && act_emission);
+                        update_weights(p_over_f,     prob_emission, 1.f, channel, is_spectral && act_emission);
                         masked(result, is_spectral && act_emission) += mis_weight(p_over_f) * mi.radiance;
-                        /*update_weights(p_over_f_old, (mi.sigma_n / mi.combined_extinction) * (1 - mi.sigma_t / mi.combined_extinction), mi.sigma_n, channel, is_spectral && act_emission);
-                        update_weights(p_over_f_nee_old, (1 - mi.sigma_t / mi.combined_extinction), mi.sigma_n, channel, is_spectral && act_emission);
-
-                        masked(ray.o, act_emission)    = mi.p;
-                        masked(ray.mint, act_emission) = 0.f;
-                        masked(si.t, act_emission)     = si.t - mi.t;*/
-
-                        masked(p_over_f,     is_spectral && act_emission) = p_over_f_old;
-                        masked(p_over_f_nee, is_spectral && act_emission) = p_over_f_nee_old;
                     }
-
-                    /*Mask null_scatter   = sampler->next_1d(act_emission) >= index_spectrum(mi.sigma_t, channel) / index_spectrum(mi.combined_extinction, channel);
-                    act_null_scatter   |=  null_scatter && act_emission;
-                    act_medium_scatter |= !act_null_scatter && act_emission;*/
                 }
 
                 active &= !act_emission;
@@ -254,8 +236,8 @@ public:
 
                 if (any_or<true>(act_null_scatter)) {
                     if (any_or<true>(is_spectral)) {
-                        update_weights(p_over_f, mi.sigma_n / mi.combined_extinction, mi.sigma_n, channel, is_spectral && act_null_scatter);
-                        update_weights(p_over_f_nee, 1.0f, mi.sigma_n, channel, is_spectral && act_null_scatter);
+                        update_weights(p_over_f,     prob_null, mi.sigma_n, channel, is_spectral && act_null_scatter);
+                        update_weights(p_over_f_nee, 1.0f,      mi.sigma_n, channel, is_spectral && act_null_scatter);
                     }
                     if (any_or<true>(not_spectral)) {
                        update_weights(p_over_f, mi.sigma_n, mi.sigma_n, channel, not_spectral && act_null_scatter);
@@ -269,7 +251,7 @@ public:
 
                 if (any_or<true>(act_medium_scatter)) {
                     if (any_or<true>(is_spectral))
-                        update_weights(p_over_f, mi.sigma_s / mi.combined_extinction, mi.sigma_s, channel, is_spectral && act_medium_scatter);
+                        update_weights(p_over_f, prob_scatter, mi.sigma_s, channel, is_spectral && act_medium_scatter);
                     if (any_or<true>(not_spectral))
                         update_weights(p_over_f, mi.sigma_s, mi.sigma_s, channel, not_spectral && act_medium_scatter);
 
@@ -440,8 +422,8 @@ public:
 
                 escaped_medium = active_medium && !mi.is_valid();
                 active_medium &= mi.is_valid();
-                is_spectral &= active_medium;
-                not_spectral &= active_medium;
+                is_spectral   &= active_medium;
+                not_spectral  &= active_medium;
 
                 masked(total_dist, active_medium) += mi.t;
 
@@ -450,9 +432,24 @@ public:
                     masked(ray.mint, active_medium) = 0.f;
                     // Update si.t since we continue the ray into the same direction
                     masked(si.t, active_medium) = si.t - mi.t;
+                    // Calculate the probability of events using the analog probabilities (proportional to volume parameters sigma_a and sigma_s)
+                    Float prob_emission = (index_spectrum(mi.sigma_t, channel) - index_spectrum(mi.sigma_s, channel));
+                    Float prob_scatter  =  index_spectrum(mi.sigma_s, channel);
+                    Float prob_null     =  index_spectrum(mi.sigma_n, channel);
+
+                    Mask natural_medium  = mi.medium->is_natural();
+
+                    masked(prob_emission, active_medium && !natural_medium) = 1.f;
+                
+                    Float c = prob_emission + prob_scatter + prob_null;
+                    masked(c, eq(c, 0.f)) = 1.0f;
+                    prob_emission /= c;
+                    prob_scatter  /= c;
+                    prob_null     /= c;
+
                     if (any_or<true>(is_spectral)) {
                         update_weights(p_over_f_nee, 1.f, mi.sigma_n, channel, is_spectral);
-                        update_weights(p_over_f_uni, mi.sigma_n / mi.combined_extinction, mi.sigma_n, channel, is_spectral);
+                        update_weights(p_over_f_uni, prob_null, mi.sigma_n, channel, is_spectral);
                     }
                     if (any_or<true>(not_spectral)) {
                         update_weights(p_over_f_nee, 1.f, mi.sigma_n / mi.combined_extinction, channel, not_spectral);

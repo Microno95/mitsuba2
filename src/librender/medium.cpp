@@ -74,6 +74,7 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
     mi.maxt         = maxt;
     std::tie(mi.sigma_s, mi.sigma_n, mi.sigma_t) = get_scattering_coefficients(mi, valid_mi);
     mi.radiance            = get_radiance(mi, valid_mi);
+    masked(mi.radiance, is_natural()) *= (mi.sigma_t - mi.sigma_s);
     mi.combined_extinction = combined_extinction;
     return mi;
 }

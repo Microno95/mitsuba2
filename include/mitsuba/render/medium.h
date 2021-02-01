@@ -28,6 +28,15 @@ public:
     virtual UnpolarizedSpectrum get_combined_extinction(const MediumInteraction3f &mi,
                             Mask active = true) const = 0;
 
+
+    /** 
+     * \brief Returns the medium's emission majorant used for modified delta tracking
+     * 
+     * \return  The medium's emission majorant used for modified delta tracking
+     */
+    virtual UnpolarizedSpectrum get_emission_majorant(const MediumInteraction3f &mi,
+                            Mask active = true) const = 0;
+
     /** 
      * \brief Returns the medium coefficients Sigma_s, Sigma_n and Sigma_t evaluated
      * at a given MediumInteraction mi
@@ -159,6 +168,7 @@ ENOKI_CALL_SUPPORT_TEMPLATE_BEGIN(mitsuba::Medium)
     ENOKI_CALL_SUPPORT_METHOD(is_natural)
     ENOKI_CALL_SUPPORT_METHOD(has_spectral_extinction)
     ENOKI_CALL_SUPPORT_METHOD(get_combined_extinction)
+    ENOKI_CALL_SUPPORT_METHOD(get_emission_majorant)
     ENOKI_CALL_SUPPORT_METHOD(get_radiance)
     ENOKI_CALL_SUPPORT_METHOD(has_absorption)
     ENOKI_CALL_SUPPORT_METHOD(has_scattering)

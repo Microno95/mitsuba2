@@ -84,8 +84,9 @@ MediumInteraction3f sample_raymarched_interaction(const Ray3f &ray,
     mi.mint         = mint;
     mi.maxt         = maxt;
     std::tie(mi.sigma_s, mi.sigma_n, mi.sigma_t) = medium->get_scattering_coefficients(mi, active);
-    mi.radiance            = medium->get_radiance(mi, active);
     mi.combined_extinction = medium->get_combined_extinction(mi, active);
+    mi.radiance            = medium->get_radiance(mi, active);
+    masked(mi.radiance, medium->is_natural()) *= (mi.sigma_t - mi.sigma_s);
     return mi;
 }
 
@@ -394,8 +395,7 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                     Int32 corr_factor                                 = (m_stratified_samples - stratified_sample_count);
                     Spectrum path_pdf                                 = select(mi.t < max_flight_distance, tr * local_st * (0.5f * corr_factor * (corr_factor + 1.f)), tr) / m_stratified_samples;
                     Float tr_pdf                                      = index_spectrum(path_pdf, channel);
-                    masked(result, sample_radiance && !medium->is_natural()) += select(tr_pdf > 0.f, throughput * tr * local_radiance / tr_pdf, 0.f);
-                    masked(result, sample_radiance &&  medium->is_natural()) += select(tr_pdf > 0.f, throughput * tr * local_radiance * (local_st - local_ss) / tr_pdf, 0.f);
+                    masked(result, sample_radiance)                  += select(tr_pdf > 0.f, throughput * tr * local_radiance / tr_pdf, 0.f);
 
                     Float rr_probability                              = 1.f;
                     rr_probability                                   /= m_stratified_samples;

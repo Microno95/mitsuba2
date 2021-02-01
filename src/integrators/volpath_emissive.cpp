@@ -66,7 +66,7 @@ public:
         }
         Mask natural_medium  = mi.medium->is_natural();
 
-        masked(prob_emission, mi.is_valid() && !natural_medium) = 1.f;
+        masked(prob_emission, !natural_medium) = 1.f;
         
         c = prob_emission + prob_scatter + prob_null;
         masked(c, eq(c, 0.f)) = 1.0f;
@@ -74,10 +74,9 @@ public:
         prob_scatter  /= c;
         prob_null     /= c;
 
-        masked(weight_emission, prob_emission > 0.f &&  natural_medium) = (mi.sigma_t - mi.sigma_s) / prob_emission;
-        masked(weight_emission, prob_emission > 0.f && !natural_medium) = 1.f / prob_emission;
-        masked(weight_scatter,  prob_scatter > 0.f)  =  mi.sigma_s / prob_scatter;
-        masked(weight_null,     prob_null > 0.f)     =  mi.sigma_n / prob_null;
+        masked(weight_emission, prob_emission > 0.f) = 1.f / prob_emission;
+        masked(weight_scatter,  prob_scatter > 0.f)  = mi.sigma_s / prob_scatter;
+        masked(weight_null,     prob_null > 0.f)     = mi.sigma_n / prob_null;
         
         masked(weight_emission, neq(weight_emission, weight_emission) || !(weight_emission < math::Infinity<Float>)) = 0.f;
         masked(weight_scatter, neq(weight_scatter, weight_scatter) || !(weight_scatter < math::Infinity<Float>)) = 0.f;
@@ -218,12 +217,7 @@ public:
 
                 if (any_or<true>(act_emission)) {
                     masked(result, act_emission)     += weight_emission * throughput * mi.radiance;
-                    masked(throughput, act_emission) *= prob_emission;
-                    
-                    // Move the ray along
-					masked(ray.o, act_emission)    = mi.p;
-					masked(ray.mint, act_emission) = 0.f;
-					masked(si.t, act_emission)     = si.t - mi.t;
+                    masked(throughput, act_emission) *= 0.f;
                 }
 
                 masked(depth, act_medium_scatter) += 1;
