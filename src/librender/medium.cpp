@@ -74,8 +74,9 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
     mi.maxt         = maxt;
     std::tie(mi.sigma_s, mi.sigma_n, mi.sigma_t) = get_scattering_coefficients(mi, valid_mi);
     mi.radiance            = get_radiance(mi, valid_mi);
-    masked(mi.radiance, is_natural()) *= (mi.sigma_t - mi.sigma_s);
     mi.combined_extinction = combined_extinction;
+    mi.sample              = sample;
+    mi.m                   = m;
     return mi;
 }
 
@@ -83,13 +84,15 @@ MTS_VARIANT
 std::pair<typename Medium<Float, Spectrum>::UnpolarizedSpectrum,
           typename Medium<Float, Spectrum>::UnpolarizedSpectrum>
 Medium<Float, Spectrum>::eval_tr_and_pdf(const MediumInteraction3f &mi,
-                                             const SurfaceInteraction3f &si,
-                                             Mask active) const {
+                                         const SurfaceInteraction3f &si,
+                                         Mask active) const {
     MTS_MASKED_FUNCTION(ProfilerPhase::MediumEvaluate, active);
 
-    Float t                       = min(mi.t, si.t) - mi.mint;
-    UnpolarizedSpectrum tr        = exp(-t * mi.combined_extinction);
-    UnpolarizedSpectrum pdf       = select(si.t < mi.t, tr, tr * mi.combined_extinction);
+    Float t                             = min(mi.t, si.t) - mi.mint;
+    UnpolarizedSpectrum tr              = exp(-t * mi.combined_extinction);
+    Float D                             = 1.f / (1.1f * (min(si.t, mi.maxt) - mi.mint));
+    UnpolarizedSpectrum pdf             = select(si.t < mi.t, tr, tr * mi.combined_extinction);
+    masked(pdf, active && mi.m < 0.001f) = select(si.t < mi.t, 0.1f/1.1f, D);
     return { tr, pdf };
 }
 

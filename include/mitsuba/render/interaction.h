@@ -400,6 +400,9 @@ struct MediumInteraction : Interaction<Float_, Spectrum_> {
     /// mint and maxt used when sampling the given distance "t".
     Float mint, maxt;
 
+    // sample and parameter used for free-flight sampling
+    Float sample, m;
+
     //! @}
     // =============================================================
 
@@ -425,7 +428,7 @@ struct MediumInteraction : Interaction<Float_, Spectrum_> {
     ENOKI_DERIVED_STRUCT(MediumInteraction, Base,
         ENOKI_BASE_FIELDS(t, time, wavelengths, p),
         ENOKI_DERIVED_FIELDS(medium, sh_frame, wi, sigma_s, sigma_n, sigma_t,
-                             combined_extinction, radiance, mint, maxt)
+                             combined_extinction, radiance, mint, maxt, sample, m)
     )
 };
 
@@ -702,7 +705,7 @@ ENOKI_STRUCT_SUPPORT(mitsuba::SurfaceInteraction, t, time, wavelengths, p,
 
 ENOKI_STRUCT_SUPPORT(mitsuba::MediumInteraction, t, time, wavelengths, p,
                      medium, sh_frame, wi, sigma_s, sigma_n, sigma_t,
-                     combined_extinction, radiance, mint, maxt)
+                     combined_extinction, radiance, mint, maxt, sample, m)
 
 ENOKI_STRUCT_SUPPORT(mitsuba::PreliminaryIntersection, t, prim_uv, prim_index, shape_index, shape, instance)
 

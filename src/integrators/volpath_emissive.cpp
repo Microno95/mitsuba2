@@ -187,7 +187,7 @@ public:
                     masked(si, intersect) = scene->ray_intersect(ray, intersect);
                 }
                 needs_intersection &= !active_medium;
-
+                masked(mi.t, mi.m < 0.001f) = mi.mint + mi.sample * (1.1f * (min(mi.maxt, si.t) - mi.mint));
                 masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
 
                 auto [tr, free_flight_pdf] = medium->eval_tr_and_pdf(mi, si, active_medium);
@@ -509,9 +509,12 @@ public:
                 auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, transmittance, channel, m_sampling_type);
 
                 if (any_or<true>(is_spectral)) {
+                    masked(mi.t, mi.m < 0.001f) = mi.mint + mi.sample * (1.1f * (min(mi.maxt, si.t) - mi.mint));
                     Float t      = min(remaining_dist, min(mi.t, si.t)) - mi.mint;
                     UnpolarizedSpectrum tr  = exp(-t * mi.combined_extinction);
+                    Float D                 = 1.f / (1.1f * (min(mi.maxt, si.t) - mi.mint));
                     UnpolarizedSpectrum free_flight_pdf = select(si.t < mi.t || mi.t > remaining_dist, tr, tr * mi.combined_extinction);
+                    masked(free_flight_pdf, mi.m < 0.001f) = select(si.t < mi.t || mi.t > remaining_dist, 0.1f / 1.1f, D);
                     Float tr_pdf = index_spectrum(free_flight_pdf, channel);
                     masked(transmittance, is_spectral) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
                     if (any_or<true>(is_sampled_emitter)) {
@@ -601,6 +604,7 @@ public:
                 if (any_or<true>(intersect))
                     masked(si, intersect) = scene->ray_intersect(ray, intersect);
 
+                masked(mi.t, mi.m < 0.001f) = mi.mint + mi.sample * (1.1f * (min(mi.maxt, si.t) - mi.mint));
                 masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
 
                 Mask is_spectral = medium->has_spectral_extinction() && active_medium;

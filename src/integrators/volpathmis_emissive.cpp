@@ -165,13 +165,16 @@ public:
 
             if (any_or<true>(active_medium)) {
                 mi = medium->sample_interaction(ray, sampler->next_1d(active_medium), channel, active_medium);
+                std::ostringstream oss;
+                oss << "Sampled distance: " << mi.mint << " <= " << mi.t << " <= " << mi.maxt;
+                Log(Debug, "%s", oss.str());
                 masked(ray.maxt, active_medium && medium->is_homogeneous() && mi.is_valid()) = mi.t;
                 Mask intersect = needs_intersection && active_medium;
                 if (any_or<true>(intersect)) {
                     masked(si, intersect) = scene->ray_intersect(ray, intersect);
                 }
                 needs_intersection &= !active_medium;
-
+                masked(mi.t, mi.m < 0.001f) = mi.mint + mi.sample * (1.1f * (min(mi.maxt, si.t) - mi.mint));
                 masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;				
 				
 				if (any_or<true>(is_spectral)) {
@@ -404,15 +407,18 @@ public:
                 Mask intersect = needs_intersection && active_medium;
                 if (any_or<true>(intersect))
                     masked(si, intersect) = scene->ray_intersect(ray, intersect);
-                masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
                 needs_intersection &= !active_medium;
+                masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
 
                 Mask is_spectral = medium->has_spectral_extinction() && active_medium;
                 Mask not_spectral = !is_spectral && active_medium;
                 if (any_or<true>(is_spectral)) {
+                    masked(mi.t, mi.m < 0.001f) = mi.mint + mi.sample * (1.1f * (min(mi.maxt, si.t) - mi.mint));
                     Float t      = min(remaining_dist, min(mi.t, si.t)) - mi.mint;
                     UnpolarizedSpectrum tr  = exp(-t * mi.combined_extinction);
-                    UnpolarizedSpectrum free_flight_pdf = select(si.t < mi.t || mi.t > remaining_dist, tr, tr * mi.combined_extinction);
+                    Float D                 = 1.f / (1.1f * (min(mi.maxt, si.t) - mi.mint));
+                    UnpolarizedSpectrum free_flight_pdf    = select(si.t < mi.t || mi.t > remaining_dist, tr, tr * mi.combined_extinction);
+                    masked(free_flight_pdf, mi.m < 0.001f) = select(si.t < mi.t || mi.t > remaining_dist, 0.1f / 1.1f, D);
                     update_weights(p_over_f_nee, free_flight_pdf, tr, channel, is_spectral);
                     update_weights(p_over_f_uni, free_flight_pdf, tr, channel, is_spectral);
                 }

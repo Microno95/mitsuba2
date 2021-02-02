@@ -85,8 +85,9 @@ MediumInteraction3f sample_raymarched_interaction(const Ray3f &ray,
     mi.maxt         = maxt;
     std::tie(mi.sigma_s, mi.sigma_n, mi.sigma_t) = medium->get_scattering_coefficients(mi, active);
     mi.combined_extinction = medium->get_combined_extinction(mi, active);
-    mi.radiance            = medium->get_radiance(mi, active);
-    masked(mi.radiance, medium->is_natural()) *= (mi.sigma_t - mi.sigma_s);
+    mi.radiance     = medium->get_radiance(mi, active);
+    mi.sample       = 0.f; 
+    mi.m            = 1.f;
     return mi;
 }
 
@@ -287,14 +288,26 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
             Mask iteration_mask = active_medium;
             masked(mi.t, eq(max_flight_distance, math::Infinity<Float>)) = math::Infinity<Float>;
             iteration_mask &= mi.is_valid() && current_flight_distance < max_flight_distance;
-            Mask reached_density = false;
+            Mask reached_density = false, non_scattering_media = !medium->has_scattering();
 
             // Instantiate tracking of optical depth, this will be used to estimate throughput
             Spectrum optical_depth(0.f), optical_step(0.f), tr(1.0f), total_radiance(0.f);
 
             // Create variables for local interaction parameters
             auto [local_ss, local_sn, local_st] = medium->get_scattering_coefficients(mi, iteration_mask);
-            Spectrum local_radiance = medium->get_radiance(mi, iteration_mask);
+            Spectrum local_radiance = medium->get_radiance(mi, iteration_mask), accumulated_radiance = 0.f, intermediate_sum = 0.f;
+
+            // If the medium is homogeneous and non-scattering, we don't have to integrate the radiance nor the optical depth
+            // Update accumulators and ray position
+            masked(current_flight_distance, iteration_mask && medium->is_homogeneous() && non_scattering_media) += max_flight_distance;
+            masked(optical_depth,           iteration_mask && medium->is_homogeneous() && non_scattering_media)  = max_flight_distance * local_st;
+            masked(mi.t,                    iteration_mask && medium->is_homogeneous() && non_scattering_media) += max_flight_distance;
+            masked(mi.p,                    iteration_mask && medium->is_homogeneous() && non_scattering_media)  = ray(current_flight_distance + mi.mint);
+            // If the medium has absorption/out-scattering, then the radiance is modulated by the transmittance
+            masked(accumulated_radiance, iteration_mask && medium->is_homogeneous() && non_scattering_media &&  medium->has_absorption()) = (local_radiance / local_st) * (1 - exp(-optical_depth));
+            // If the medium has no absorption/out-scattering, then the radiance is just the linear sum of the radiating elements
+            masked(accumulated_radiance, iteration_mask && medium->is_homogeneous() && non_scattering_media && !medium->has_absorption()) = local_radiance * max_flight_distance;
+            iteration_mask &= !medium->is_homogeneous() || !non_scattering_media;
 
             // Initialise step size
             // For inhomogeneous media we will use RK45 to do the integration
@@ -328,7 +341,7 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 // If we do, find the point between this point and the last point that reaches the desired density
                 // The desired density and the obtained density may differ since we sample the density at the point we interpolate to
                 // And if the step size is larger than 2x the mean grid spacing then this can be quite different
-                Mask optical_depth_needs_correction = iteration_mask && (index_spectrum(optical_depth + optical_step, channel) >= desired_density);
+                Mask optical_depth_needs_correction = iteration_mask && (index_spectrum(optical_depth + optical_step, channel) >= desired_density) && !non_scattering_media;
                 Spectrum old_optical_step = optical_step, old_optical_depth = optical_depth;
                 Float old_desired_density = desired_density;
 
@@ -381,6 +394,14 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 // ------------------------------------------------------- //
                 masked(dt, iteration_mask) = curr_dt;
 
+                // std::ostringstream oss;
+                // Accumulate radiance on first half of step for non-scattering media
+                if (any_or<true>(non_scattering_media)) {
+                    masked(local_radiance, non_scattering_media)    = medium->get_radiance(mi, non_scattering_media);
+                    masked(intermediate_sum, non_scattering_media) += exp(-optical_depth) * local_radiance;
+                    // oss << "[Test radiance transport iter]: (" << exp(-optical_depth) << " * " << local_radiance;
+                }
+
                 // Update accumulators and ray position
                 masked(current_flight_distance, iteration_mask) += dt;
                 masked(optical_depth, iteration_mask)           += optical_step;
@@ -388,6 +409,7 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 masked(mi.p, iteration_mask)                     = ray(current_flight_distance + mi.mint);
                 Mask sample_radiance                             = optical_depth_needs_correction && (desired_density - index_spectrum(optical_depth, channel) < math::RayEpsilon<Float>);
 
+                // Sample Emission at the Integrate Point
                 if (any_or<true>(sample_radiance)) {
                     std::tie(local_ss, local_sn, local_st)            = medium->get_scattering_coefficients(mi, sample_radiance);
                     local_radiance                                    = medium->get_radiance(mi, sample_radiance);
@@ -395,7 +417,7 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                     Int32 corr_factor                                 = (m_stratified_samples - stratified_sample_count);
                     Spectrum path_pdf                                 = select(mi.t < max_flight_distance, tr * local_st * (0.5f * corr_factor * (corr_factor + 1.f)), tr) / m_stratified_samples;
                     Float tr_pdf                                      = index_spectrum(path_pdf, channel);
-                    masked(result, sample_radiance)                  += select(tr_pdf > 0.f, throughput * tr * local_radiance / tr_pdf, 0.f);
+                    masked(accumulated_radiance, sample_radiance)    += select(tr_pdf > 0.f, tr * local_radiance / tr_pdf, 0.f);
 
                     Float rr_probability                              = 1.f;
                     rr_probability                                   /= m_stratified_samples;
@@ -406,6 +428,17 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                     masked(stratified_sample_count, sample_radiance && !reached_density) += 1;
                     masked(max_throughput, sample_radiance && !reached_density)           = (sampler->next_1d(sample_radiance) + (m_stratified_samples - stratified_sample_count - 1.f)) / m_stratified_samples;
                     masked(desired_density, sample_radiance && !reached_density)          = -enoki::log(max_throughput);
+                }
+
+                // Accumulate radiance on second half of step for non-scattering media
+                // and add radiance to the accumulated radiance
+                if (any_or<true>(non_scattering_media)) {
+                    masked(local_radiance, non_scattering_media)        = medium->get_radiance(mi, non_scattering_media);
+                    masked(intermediate_sum, non_scattering_media)     += exp(-optical_depth) * local_radiance;
+                    masked(accumulated_radiance, non_scattering_media) += intermediate_sum * dt * 0.5f;
+                    // oss << " + " << exp(-optical_depth) << " * " << local_radiance << ") * " << dt << " / 2 = " << intermediate_sum * dt * 0.5f << " | max flight: " << max_flight_distance << ", mi.t: " << mi.t;
+                    // Log(Info, "%s", oss.str());
+                    intermediate_sum                                    = 0.f;
                 }
 
                 // {
@@ -422,11 +455,11 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
                 if (m_use_adaptive_sampling) {
                     masked(dt, iteration_mask) = max_flight_distance - current_flight_distance;
                     masked(dt, iteration_mask && !medium->is_homogeneous()) = min(dt, next_dt);
-                    masked(dt, iteration_mask &&  medium->is_homogeneous()) = min(dt, desired_density / index_spectrum(local_st, channel));
+                    masked(dt, iteration_mask &&  medium->is_homogeneous() && !non_scattering_media) = min(dt, desired_density / index_spectrum(local_st, channel));
                 } else {
                     masked(dt, iteration_mask) = max_flight_distance - current_flight_distance;
                     masked(dt, iteration_mask && !medium->is_homogeneous()) = min(dt, m_volume_step_size);
-                    masked(dt, iteration_mask &&  medium->is_homogeneous()) = min(dt, desired_density / index_spectrum(local_st, channel));
+                    masked(dt, iteration_mask &&  medium->is_homogeneous() && !non_scattering_media) = min(dt, desired_density / index_spectrum(local_st, channel));
                 }
 
                 if (any(optical_step != optical_step)) {
@@ -447,8 +480,9 @@ std::pair<Spectrum, Mask> sample(const Scene *scene,
             Spectrum path_pdf = select(mi.t < max_flight_distance, tr * local_st, tr);
             Float tr_pdf      = index_spectrum(path_pdf, channel);
 
-            // masked(result, active_medium)     += select(tr_pdf > 0.f, (m_stratified_samples - stratified_sample_count) * throughput * tr * local_radiance * (local_st - local_ss) / (tr_pdf * m_stratified_samples), 0.f);
-            masked(throughput, active_medium) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
+            masked(result, active_medium)                              += throughput * accumulated_radiance;
+            masked(throughput, active_medium &&  non_scattering_media) *= tr;
+            masked(throughput, active_medium && !non_scattering_media) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
 
             masked(mi.t, active_medium && mi.t >= max_flight_distance) = math::Infinity<Float>;
             masked(mi.t, active_medium && mi.t >= si.t)                = math::Infinity<Float>;

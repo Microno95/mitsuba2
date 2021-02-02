@@ -161,14 +161,20 @@ void bind_slicing_operator_mediuminteraction(PyClass &cl) {
                 throw py::index_error();
 
             Class res = zero<Class>(1);
-            res.t           = slice(mi.t, i);
-            res.time        = slice(mi.time, i);
-            res.wavelengths = slice(mi.wavelengths, i);
-            res.p           = slice(mi.p, i);
-            res.medium      = mi.medium[i];
-            res.sh_frame    = slice(mi.sh_frame, i);
-            res.wi          = slice(mi.wi, i);
-            res.mint        = slice(mi.mint, i);
+            res.t                   = slice(mi.t, i);
+            res.time                = slice(mi.time, i);
+            res.wavelengths         = slice(mi.wavelengths, i);
+            res.p                   = slice(mi.p, i);
+            res.medium              = mi.medium[i];
+            res.sh_frame            = slice(mi.sh_frame, i);
+            res.wi                  = slice(mi.wi, i);
+            res.mint                = slice(mi.mint, i);
+            res.maxt                = slice(mi.maxt, i);
+            res.sigma_s             = slice(mi.sigma_s, i);
+            res.sigma_n             = slice(mi.sigma_n, i);
+            res.sigma_t             = slice(mi.sigma_t, i);
+            res.radiance            = slice(mi.radiance, i);
+            res.combined_extinction = slice(mi.combined_extinction, i);
             return res;
         })
         .def("__setitem__", [](Class &r, size_t i,
@@ -179,14 +185,20 @@ void bind_slicing_operator_mediuminteraction(PyClass &cl) {
             if (slices(r2) != 1)
                 throw py::index_error();
 
-            slice(r.t, i)           = slice(r2.t, 0);
-            slice(r.time, i)        = slice(r2.time, 0);
-            slice(r.wavelengths, i) = slice(r2.wavelengths, 0);
-            slice(r.p, i)           = slice(r2.p, 0);
-            r.medium[i]             = slice(r2.medium, 0);
-            slice(r.sh_frame, i)    = slice(r2.sh_frame, 0);
-            slice(r.wi, i)          = slice(r2.wi, 0);
-            slice(r.mint, i)        = slice(r2.mint, 0);
+            slice(r.t, i)                   = slice(r2.t, 0);
+            slice(r.time, i)                = slice(r2.time, 0);
+            slice(r.wavelengths, i)         = slice(r2.wavelengths, 0);
+            slice(r.p, i)                   = slice(r2.p, 0);
+            r.medium[i]                     = slice(r2.medium, 0);
+            slice(r.sh_frame, i)            = slice(r2.sh_frame, 0);
+            slice(r.wi, i)                  = slice(r2.wi, 0);
+            slice(r.mint, i)                = slice(r2.mint, 0);
+            slice(r.maxt, i)                = slice(r2.maxt, 0);
+            slice(r.sigma_s, i)             = slice(r2.sigma_s, 0);
+            slice(r.sigma_n, i)             = slice(r2.sigma_n, 0);
+            slice(r.sigma_t, i)             = slice(r2.sigma_t, 0);
+            slice(r.radiance, i)            = slice(r2.radiance, 0);
+            slice(r.combined_extinction, i) = slice(r2.combined_extinction, 0);
         })
         .def("__len__", [](const Class &r) {
             return slices(r);

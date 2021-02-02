@@ -78,7 +78,13 @@ public:
     UnpolarizedSpectrum get_radiance(const MediumInteraction3f &mi,
                                                  Mask active) const override {
         MTS_MASKED_FUNCTION(ProfilerPhase::MediumEvaluate, active);
-        return m_radiance->eval(mi, active) * m_emission_scale;
+        if (m_is_natural) {
+            auto sigmat = m_scale * m_sigmat->eval(mi, active);
+            auto sigmas = sigmat * m_albedo->eval(mi, active);
+            return (sigmat - sigmas) * m_radiance->eval(mi, active) * m_emission_scale;
+        } else {
+            return m_radiance->eval(mi, active) * m_emission_scale;
+        }
     }
 
     void traverse(TraversalCallback *callback) override {

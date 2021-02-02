@@ -45,7 +45,13 @@ public:
     }
 
     MTS_INLINE auto eval_radiance(const MediumInteraction3f &mi) const {
-        return m_radiance->eval(mi) * m_emission_scale;
+        if (m_is_natural) {
+            auto sigmat = m_scale * m_sigmat->eval(mi);
+            auto sigmas = sigmat  * m_albedo->eval(mi);
+            return (sigmat - sigmas) * m_radiance->eval(mi) * m_emission_scale;
+        } else {
+            return m_radiance->eval(mi) * m_emission_scale;
+        }
     }
 
     UnpolarizedSpectrum get_combined_extinction(const MediumInteraction3f &mi,
