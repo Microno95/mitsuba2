@@ -72,7 +72,7 @@ MTS_PY_EXPORT(Medium) {
             .def("get_radiance", vectorize(&Medium::get_radiance), "mi"_a,
                  "active"_a = true)
             .def("sample_interaction", vectorize(&Medium::sample_interaction),
-                 "ray"_a, "sample"_a, "channel"_a, "active"_a = true)
+                 "ray"_a, "next_surface_t"_a, "sample"_a, "channel"_a, "active"_a = true)
             .def("eval_tr_and_pdf", vectorize(&Medium::eval_tr_and_pdf),
                  "mi"_a, "si"_a, "active"_a = true)
             .def_method(Medium, phase_function)
@@ -121,11 +121,11 @@ MTS_PY_EXPORT(Medium) {
             "ptr"_a, "mi"_a, "active"_a = true);
         medium.def_static(
             "sample_interaction_vec",
-            vectorize([](const MediumPtr &ptr, Ray3f ray, Float sample,
+            vectorize([](const MediumPtr &ptr, Ray3f ray, Float next_surface_t, Float sample,
                          UInt32 channel, Mask active) {
-                return ptr->sample_interaction(ray, sample, channel, active);
+                return ptr->sample_interaction(ray, next_surface_t, sample, channel, active);
             }),
-            "ptr"_a, "ray"_a, "sample"_a, "channel"_a, "active"_a = true);
+            "ptr"_a, "ray"_a, "next_surface_t"_a, "sample"_a, "channel"_a, "active"_a = true);
         medium.def_static(
             "eval_tr_and_pdf_vec",
             vectorize([](const MediumPtr &ptr, const MediumInteraction3f &mi,

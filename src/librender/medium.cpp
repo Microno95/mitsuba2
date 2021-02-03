@@ -33,7 +33,7 @@ MTS_VARIANT Medium<Float, Spectrum>::~Medium() {}
 
 MTS_VARIANT
 typename Medium<Float, Spectrum>::MediumInteraction3f
-Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
+Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float next_surface_t, Float sample,
                                             UInt32 channel, Mask active) const {
     MTS_MASKED_FUNCTION(ProfilerPhase::MediumSample, active);
 
@@ -64,6 +64,8 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
 
     // Sampling based on infinite homogeneous medium assumption
     Float sampled_t = mint + (-enoki::log(1 - sample) / m);
+    // Switch to uniform sampling when medium density is low
+    masked(sampled_t, m < 0.001f) = mint + 1.01f * sample * (max(next_surface_t, maxt) - mint);
     // Sampling based on finite volume using homogeneous medium assumption
     //masked(sampled_t, maxt < math::Infinity<Float>) = mint + (-enoki::log(1 - sample * (1.f - exp(-m * maxt)) / m));
     Mask valid_mi   = active && (sampled_t <= maxt);
@@ -90,9 +92,9 @@ Medium<Float, Spectrum>::eval_tr_and_pdf(const MediumInteraction3f &mi,
 
     Float t                             = min(mi.t, si.t) - mi.mint;
     UnpolarizedSpectrum tr              = exp(-t * mi.combined_extinction);
-    Float D                             = 1.f / (1.1f * (min(si.t, mi.maxt) - mi.mint));
+    Float D                             = 1.f / (1.01f * (min(si.t, mi.maxt) - mi.mint));
     UnpolarizedSpectrum pdf             = select(si.t < mi.t, tr, tr * mi.combined_extinction);
-    masked(pdf, active && mi.m < 0.001f) = select(si.t < mi.t, 0.1f/1.1f, D);
+    masked(pdf, active && mi.m < 0.001f) = select(si.t < mi.t, 0.01f/1.01f, D);
     return { tr, pdf };
 }
 
