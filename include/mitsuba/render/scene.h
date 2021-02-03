@@ -158,11 +158,12 @@ public:
      *    Radiance received along the sampled ray divided by the sample
      *    probability.
      */
-    std::tuple<DirectionSample3f, Spectrum, MediumPtr>
+    std::pair<DirectionSample3f, Spectrum>
     sample_volume_emitter_direction(const Interaction3f &ref, 
                                     const Point2f &sample,
                                     bool test_visibility = true,
-                                    Mask active          = true) const;
+                                    Mask active          = true,
+                                    UInt32 channel       = 0) const;
 
     /**
      * \brief Evaluate the probability density of the  \ref
@@ -180,7 +181,8 @@ public:
      */
     Float pdf_volume_emitter_direction(const Interaction3f &ref,
                                        const DirectionSample3f &ds,
-                                       Mask active = true) const;
+                                       Mask active = true,
+                                       UInt32 channel = 0) const;
 
     //! @}
     // =============================================================
@@ -226,6 +228,9 @@ public:
 
     /// Return whether any of the shape's parameters require gradient
     bool shapes_grad_enabled() const { return m_shapes_grad_enabled; };
+
+    //// Return the fraction of emitters that are volume emitters
+    Float get_volume_emitter_probability() const { return m_emissive_mediums.size() * (1.f / (m_emitters.size() + m_emissive_mediums.size())); };
 
     /// Return a human-readable string representation of the scene contents.
     virtual std::string to_string() const override;
