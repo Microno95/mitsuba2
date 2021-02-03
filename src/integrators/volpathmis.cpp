@@ -164,7 +164,7 @@ public:
             }
 
             if (any_or<true>(active_medium)) {
-                mi = medium->sample_interaction(ray, sampler->next_1d(active_medium), channel, active_medium);
+                mi = medium->sample_interaction(ray, si.t, sampler->next_1d(active_medium), channel, active_medium);
                 masked(ray.maxt, active_medium && medium->is_homogeneous() && mi.is_valid()) = mi.t;
                 Mask intersect = needs_intersection && active_medium;
                 if (any_or<true>(intersect))
@@ -364,7 +364,7 @@ public:
             Mask active_surface = active && !active_medium;
 
             if (any_or<true>(active_medium)) {
-                auto mi = medium->sample_interaction(ray, sampler->next_1d(active_medium), channel, active_medium);
+                auto mi = medium->sample_interaction(ray, si.t, sampler->next_1d(active_medium), channel, active_medium);
                 masked(ray.maxt, active_medium && medium->is_homogeneous() && mi.is_valid()) = min(mi.t, remaining_dist);
                 Mask intersect = needs_intersection && active_medium;
                 if (any_or<true>(intersect))
