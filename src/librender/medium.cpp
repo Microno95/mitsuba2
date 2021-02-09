@@ -62,10 +62,12 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float next_surface
         ENOKI_MARK_USED(channel);
     }
 
+    // -- Sample a free-flight distance --
+    mi.uniformly_sampled   = active && m < 0.001f && (next_surface_t < math::Infinity<Float>) && !is_natural();
+    mi.m                   = select(mi.uniformly_sampled, min(next_surface_t, maxt) - mint, m);
     // Sampling based on infinite homogeneous medium assumption
-    Float sampled_t = mint + (-enoki::log(1 - sample) / m);
+    Float sampled_t = mint + select(mi.uniformly_sampled, 1.01f * sample * mi.m, -enoki::log(1 - sample) / mi.m);
     // Switch to uniform sampling when medium density is low
-    masked(sampled_t, m < 0.001f) = mint + 1.01f * sample * (max(next_surface_t, maxt) - mint);
     // Sampling based on finite volume using homogeneous medium assumption
     //masked(sampled_t, maxt < math::Infinity<Float>) = mint + (-enoki::log(1 - sample * (1.f - exp(-m * maxt)) / m));
     Mask valid_mi   = active && (sampled_t <= maxt);
@@ -77,8 +79,6 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float next_surface
     std::tie(mi.sigma_s, mi.sigma_n, mi.sigma_t) = get_scattering_coefficients(mi, valid_mi);
     mi.radiance            = get_radiance(mi, valid_mi);
     mi.combined_extinction = combined_extinction;
-    mi.sample              = sample;
-    mi.m                   = m;
     return mi;
 }
 
@@ -92,9 +92,8 @@ Medium<Float, Spectrum>::eval_tr_and_pdf(const MediumInteraction3f &mi,
 
     Float t                             = min(mi.t, si.t) - mi.mint;
     UnpolarizedSpectrum tr              = exp(-t * mi.combined_extinction);
-    Float D                             = 1.f / (1.01f * (min(si.t, mi.maxt) - mi.mint));
     UnpolarizedSpectrum pdf             = select(si.t < mi.t, tr, tr * mi.combined_extinction);
-    masked(pdf, active && mi.m < 0.001f) = select(si.t < mi.t, 0.01f/1.01f, D);
+    masked(pdf, active && mi.uniformly_sampled) = select(si.t < mi.t, 0.01f/1.01f, 1.f / mi.m);
     return { tr, pdf };
 }
 
