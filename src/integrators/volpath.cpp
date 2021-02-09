@@ -102,7 +102,7 @@ public:
             }
 
             if (any_or<true>(active_medium)) {
-                mi = medium->sample_interaction(ray, si.t, sampler->next_1d(active_medium), channel, active_medium);
+                mi = medium->sample_interaction(ray, math::Infinity<Float>, sampler->next_1d(active_medium), channel, active_medium);
                 masked(ray.maxt, active_medium && medium->is_homogeneous() && mi.is_valid()) = mi.t;
                 Mask intersect = needs_intersection && active_medium;
                 if (any_or<true>(intersect))
@@ -110,6 +110,7 @@ public:
                 needs_intersection &= !active_medium;
 
                 masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
+                
                 if (any_or<true>(is_spectral)) {
                     auto [tr, free_flight_pdf] = medium->eval_tr_and_pdf(mi, si, is_spectral);
                     Float tr_pdf = index_spectrum(free_flight_pdf, channel);
@@ -291,7 +292,7 @@ public:
             Mask active_surface = active && !active_medium;
 
             if (any_or<true>(active_medium)) {
-                auto mi = medium->sample_interaction(ray, si.t, sampler->next_1d(active_medium), channel, active_medium);
+                auto mi = medium->sample_interaction(ray, math::Infinity<Float>, sampler->next_1d(active_medium), channel, active_medium);
                 masked(ray.maxt, active_medium && medium->is_homogeneous() && mi.is_valid()) = min(mi.t, remaining_dist);
                 Mask intersect = needs_intersection && active_medium;
                 if (any_or<true>(intersect))
@@ -388,7 +389,7 @@ public:
             Mask active_surface = active && !active_medium;
             SurfaceInteraction3f si_medium;
             if (any_or<true>(active_medium)) {
-                auto mi = medium->sample_interaction(ray, si.t, sampler->next_1d(active_medium), channel, active_medium);
+                auto mi = medium->sample_interaction(ray, math::Infinity<Float>, sampler->next_1d(active_medium), channel, active_medium);
                 masked(ray.maxt, active_medium && medium->is_homogeneous() && mi.is_valid()) = mi.t;
                 Mask intersect = needs_intersection && active_medium;
                 if (any_or<true>(intersect))
