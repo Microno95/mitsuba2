@@ -26,7 +26,7 @@ public:
             m_sampling_type = 0;
         } else if (sampling_type == "max") {
             m_sampling_type = 1;
-        } else if (sampling_type == "average") {
+        } else if (sampling_type == "mean") {
             m_sampling_type = 2;
         } else {
             Log(Warn, "Sampling Probability Type %s not recognised, defaulting to \"analog\" sampling", sampling_type);
@@ -53,34 +53,50 @@ public:
                          uint32_t probability_type = 0) const {
         Float prob_emission, prob_scatter, prob_null, c;
         Spectrum weight_emission(0.0f), weight_scatter(0.0f), weight_null(0.0f);
+        
         if (probability_type == 0) {
-            std::tie(prob_emission, prob_scatter, prob_null) = medium_probabilities_analog(mi.sigma_t, mi.sigma_s, mi.sigma_n, mi.combined_extinction, channel);
+            std::tie(prob_emission, prob_scatter, prob_null) = medium_probabilities_analog(mi.sigma_t, mi.sigma_s, mi.sigma_n, channel);
+        } else if (probability_type == 1) {
+            std::tie(prob_emission, prob_scatter, prob_null) = medium_probabilities_max(mi.sigma_t, mi.sigma_s, mi.sigma_n, throughput);
+        } else if (probability_type == 2) {
+            std::tie(prob_emission, prob_scatter, prob_null) = medium_probabilities_mean(mi.sigma_t, mi.sigma_s, mi.sigma_n, throughput);
         } else {
-            if (probability_type == 1) {
-                std::tie(prob_emission, prob_scatter, prob_null) = medium_probabilities_max(mi.sigma_t, mi.sigma_s, mi.sigma_n, throughput);
-            } else if (probability_type == 2) {
-                std::tie(prob_emission, prob_scatter, prob_null) = medium_probabilities_average(mi.sigma_t, mi.sigma_s, mi.sigma_n, throughput);
-            } else {
-                Throw("Invalid probability type:", "%i", probability_type);
-            }
+            Throw("Invalid probability type:", "%i", probability_type);
         }
-        Mask natural_medium  = mi.medium->is_natural();
 
-        masked(prob_emission, !natural_medium) = 1.f;
+        Mask natural_medium  = mi.medium->is_natural();
+        Mask has_radiance    = enoki::hmean(mi.radiance) > 0.f;
+        
+        masked(prob_emission, !natural_medium && has_radiance) = 1.f;
+        masked(prob_emission, !has_radiance)                   = 0.f;
         
         c = prob_emission + prob_scatter + prob_null;
-        masked(c, eq(c, 0.f)) = 1.0f;
+        
+        // {
+        //     std::ostringstream oss;
+        //     oss << "[probability calculations 1]: (channel=" << channel << ") c = " << c << ", combined_extinction = " << mi.combined_extinction << " | {" << "p_e = " << prob_emission << ", " << "p_s = " << prob_scatter << ", " << "p_n = " << prob_null << "}";
+        //     Log(Info, "%s", oss.str());
+        // }
+
+        masked(prob_scatter, eq(c, 0.f)) = 1.0f;
+        masked(c, eq(c, 0.f))            = 1.0f;
         prob_emission /= c;
         prob_scatter  /= c;
         prob_null     /= c;
 
+        // {
+        //     std::ostringstream oss;
+        //     oss << "[probability calculations 2]: {" << "p_e = " << prob_emission << ", " << "p_s = " << prob_scatter << ", " << "p_n = " << prob_null << "}";
+        //     Log(Info, "%s", oss.str());
+        // }
+
         masked(weight_emission, prob_emission > 0.f) = 1.f / prob_emission;
-        masked(weight_scatter,  prob_scatter > 0.f)  = mi.sigma_s / prob_scatter;
-        masked(weight_null,     prob_null > 0.f)     = mi.sigma_n / prob_null;
+        masked(weight_scatter,  prob_scatter > 0.f)  = 1.f / prob_scatter;
+        masked(weight_null,     prob_null > 0.f)     = 1.f / prob_null;
         
         masked(weight_emission, neq(weight_emission, weight_emission) || !(weight_emission < math::Infinity<Float>)) = 0.f;
-        masked(weight_scatter, neq(weight_scatter, weight_scatter) || !(weight_scatter < math::Infinity<Float>)) = 0.f;
-        masked(weight_null, neq(weight_null, weight_null) || !(weight_null < math::Infinity<Float>)) = 0.f;
+        masked(weight_scatter,  neq(weight_scatter, weight_scatter)   || !(weight_scatter < math::Infinity<Float>))  = 0.f;
+        masked(weight_null,     neq(weight_null, weight_null)         || !(weight_null < math::Infinity<Float>))     = 0.f;
         
         return { prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null };
     }
@@ -89,12 +105,11 @@ public:
     medium_probabilities_analog(const Spectrum &sigma_t, 
                                 const Spectrum &sigma_s,
                                 const Spectrum &sigma_n,
-                                const Spectrum &combined_extinction,
                                 UInt32 &channel) const {
         Float prob_e = 0.f, prob_s = 0.f, prob_n = 0.f;
-        prob_e = (index_spectrum(sigma_t, channel) - index_spectrum(sigma_s, channel)) / index_spectrum(combined_extinction, channel);
-		prob_s =  index_spectrum(sigma_s, channel) / index_spectrum(combined_extinction, channel);
-		prob_n =  index_spectrum(sigma_n, channel) / index_spectrum(combined_extinction, channel);
+        prob_e = (index_spectrum(sigma_t - sigma_s, channel));
+		prob_s =  index_spectrum(sigma_t, channel);
+		prob_n =  index_spectrum(sigma_n, channel);
         return { prob_e, prob_s, prob_n };
     }
 
@@ -104,21 +119,21 @@ public:
                              const Spectrum &sigma_n,
                              const Spectrum &throughput) const {
         Float prob_e = 0.f, prob_s = 0.f, prob_n = 0.f;
-        prob_e = hmax(abs((sigma_t - sigma_s) * throughput));
-        prob_s = hmax(abs( sigma_s * throughput));
-        prob_n = hmax(abs( sigma_n * throughput));
+        prob_e = enoki::hmax(enoki::abs((sigma_t - sigma_s) * throughput));
+        prob_s = enoki::hmax(enoki::abs( sigma_s * throughput));
+        prob_n = enoki::hmax(enoki::abs( sigma_n * throughput));
         return { prob_e, prob_s, prob_n};
     }
 
     MTS_INLINE std::tuple<Float, Float, Float>
-    medium_probabilities_average(const Spectrum &sigma_t,
-                                 const Spectrum &sigma_s, 
-                                 const Spectrum &sigma_n,
-                                 const Spectrum &throughput) const {
+    medium_probabilities_mean(const Spectrum &sigma_t,
+                              const Spectrum &sigma_s, 
+                              const Spectrum &sigma_n,
+                              const Spectrum &throughput) const {
         Float prob_e = 0.f, prob_s = 0.f, prob_n = 0.f;
-        prob_e = hmean(abs((sigma_t - sigma_s) * throughput));
-        prob_s = hmean(abs( sigma_s * throughput));
-        prob_n = hmean(abs( sigma_n * throughput));
+        prob_e = enoki::hmean(enoki::abs((sigma_t - sigma_s) * throughput));
+        prob_s = enoki::hmean(enoki::abs( sigma_s * throughput));
+        prob_n = enoki::hmean(enoki::abs( sigma_n * throughput));
         return {prob_e, prob_s, prob_n} ;
     }
 
@@ -180,19 +195,17 @@ public:
 				 act_medium_scatter = false, escaped_medium = false;
 
             if (any_or<true>(active_medium)) {
-                mi = medium->sample_interaction(ray, sampler->next_1d(active_medium), channel, active_medium);
+                mi = medium->sample_interaction(ray, math::Infinity<Float>, sampler->next_1d(active_medium), channel, active_medium);
                 masked(ray.maxt, active_medium && medium->is_homogeneous() && mi.is_valid()) = mi.t;
                 Mask intersect = needs_intersection && active_medium;
                 if (any_or<true>(intersect)) {
                     masked(si, intersect) = scene->ray_intersect(ray, intersect);
                 }
                 needs_intersection &= !active_medium;
-                masked(mi.t, mi.m < 0.001f) = mi.mint + mi.sample * (1.1f * (min(mi.maxt, si.t) - mi.mint));
                 masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
 
                 auto [tr, free_flight_pdf] = medium->eval_tr_and_pdf(mi, si, active_medium);
                 Float tr_pdf = index_spectrum(free_flight_pdf, channel);
-                //Float tr_pdf = hmean(free_flight_pdf);
                 prev_throughput = throughput;
                 masked(throughput, active_medium) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
 
@@ -207,31 +220,35 @@ public:
                 // Handle absorption, null and real scatter events
                 auto medium_sample_eta   = sampler->next_1d(active_medium);
 
-                Mask emission_interaction =  medium_sample_eta <= prob_emission;
-                Mask scatter_interaction  = (medium_sample_eta <= 1 - prob_null) && (medium_sample_eta > prob_emission);
-                Mask null_interaction     =  medium_sample_eta > 1 - prob_null;
+                Mask emission_interaction = medium_sample_eta < prob_emission;
+                Mask scatter_interaction  = medium_sample_eta <= 1.f - prob_null && !emission_interaction;
+                Mask null_interaction     = !emission_interaction && !scatter_interaction;
+                
+                // {
+                //     std::ostringstream oss;
+                //     oss << "[probability calculations 3]: {E_a = " << emission_interaction << ", E_s = " << scatter_interaction << ", E_n = " << null_interaction << "}";
+                //     Log(Info, "%s", oss.str());
+                // }
 
                 act_emission       |= emission_interaction && active_medium;
-                act_medium_scatter |= scatter_interaction && active_medium;
-                act_null_scatter   |= null_interaction && active_medium;
+                act_medium_scatter |= scatter_interaction  && active_medium;
+                act_null_scatter   |= null_interaction     && active_medium;
 
                 if (any_or<true>(act_emission)) {
-                    masked(result, act_emission)     += weight_emission * throughput * mi.radiance;
-                    masked(throughput, act_emission) *= 0.f;
+                    masked(result, act_emission) += weight_emission * throughput * mi.radiance;
                 }
 
                 masked(depth, act_medium_scatter) += 1;
 
                 // Dont estimate lighting if we exceeded number of bounces
                 active &= depth < (uint32_t) m_max_depth;
-
                 active &= !act_emission;
 				
 				act_medium_scatter &= active;
 				act_null_scatter   &= active;
 
 				if (any_or<true>(act_null_scatter)) {
-                    masked(throughput, act_null_scatter) *= weight_null;
+                    masked(throughput, act_null_scatter) *= mi.sigma_n * weight_null;
 
                     // Move the ray along
 					masked(ray.o, act_null_scatter)    = mi.p;
@@ -240,7 +257,7 @@ public:
 				}
 				
 				if (any_or<true>(act_medium_scatter)) {
-                    masked(throughput, act_medium_scatter) *= weight_scatter;
+                    masked(throughput, act_medium_scatter) *= mi.sigma_s * weight_scatter;
 
 					PhaseFunctionContext phase_ctx(sampler);
 					auto phase = mi.medium->phase_function();
@@ -355,7 +372,7 @@ public:
     sample_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction, const Scene *scene,
                           Sampler *sampler, MediumPtr medium, UInt32 channel, Mask active) const {
         using EmitterPtr = replace_scalar_t<Float, const Emitter *>;
-        Spectrum transmittance(1.0f), prev_transmittance(1.0f);
+        Spectrum transmittance(1.0f);
 
         auto [ds, emitter_val] = scene->sample_emitter_direction(ref_interaction, sampler->next_2d(active), false, active);
         masked(emitter_val, eq(ds.pdf, 0.f)) = 0.f;
@@ -384,7 +401,8 @@ public:
             Mask active_surface = active && !active_medium;
 
             if (any_or<true>(active_medium)) {
-                auto mi = medium->sample_interaction(ray, sampler->next_1d(active_medium), channel, active_medium);
+                auto prev_transmittance = transmittance;
+                auto mi = medium->sample_interaction(ray, math::Infinity<Float>, sampler->next_1d(active_medium), channel, active_medium);
                 masked(ray.maxt, active_medium && medium->is_homogeneous() && mi.is_valid()) = min(mi.t, remaining_dist);
                 Mask intersect = needs_intersection && active_medium;
                 if (any_or<true>(intersect))
@@ -396,11 +414,10 @@ public:
                 Mask is_spectral = medium->has_spectral_extinction() && active_medium;
                 Mask not_spectral = !is_spectral && active_medium;
                 if (any_or<true>(is_spectral)) {
-                    Float t      = min(remaining_dist, min(mi.t, si.t)) - mi.mint;
+                    Float t = min(remaining_dist, min(mi.t, si.t)) - mi.mint;
                     UnpolarizedSpectrum tr  = exp(-t * mi.combined_extinction);
                     UnpolarizedSpectrum free_flight_pdf = select(si.t < mi.t || mi.t > remaining_dist, tr, tr * mi.combined_extinction);
                     Float tr_pdf = index_spectrum(free_flight_pdf, channel);
-                    prev_transmittance = transmittance;
                     masked(transmittance, is_spectral) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
                 }
 
@@ -419,10 +436,12 @@ public:
                     masked(ray.o, active_medium)    = mi.p;
                     masked(ray.mint, active_medium) = 0.f;
                     masked(si.t, active_medium) = si.t - mi.t;
-                    // Compute emmission, scatter and null event probabilities
                     auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, prev_transmittance, channel, m_sampling_type);
 
-                    masked(transmittance, active_medium) *= mi.sigma_n;
+                    if (any_or<true>(is_spectral))
+                        masked(transmittance, is_spectral) *= mi.sigma_n;
+                    if (any_or<true>(not_spectral))
+                        masked(transmittance, not_spectral) *= mi.sigma_n / mi.combined_extinction;
                 }
             }
 
@@ -459,124 +478,6 @@ public:
         return { emitter_val * transmittance, ds };
     }
 
-    /// Samples a volume emitter in the scene and evaluates it's attenuated contribution
-    std::tuple<Spectrum, DirectionSample3f>
-    sample_volume_emitter(const Interaction3f &ref_interaction, Mask is_medium_interaction, const Scene *scene,
-                          Sampler *sampler, MediumPtr medium, UInt32 channel, Mask active) const {
-        using EmitterPtr = replace_scalar_t<Float, const Emitter *>;
-        Spectrum transmittance(1.0f);
-
-        auto [ds, emitter_val, sampled_medium] = scene->sample_volume_emitter_direction(ref_interaction, sampler->next_2d(active), false, active);
-        masked(emitter_val, eq(ds.pdf, 0.f)) = 0.f;
-        active &= neq(ds.pdf, 0.f);
-
-        if (none_or<false>(active)) {
-            return { emitter_val, ds };
-        }
-
-        Ray3f ray = ref_interaction.spawn_ray(ds.d);
-        masked(ray.mint, is_medium_interaction) = 0.f;
-
-        Float total_dist = 0.f;
-        SurfaceInteraction3f si = zero<SurfaceInteraction3f>();
-        si.t = math::Infinity<Float>;
-        Mask needs_intersection = true;
-        while (any(active)) {
-            Float remaining_dist = ds.dist * (1.f - math::ShadowEpsilon<Float>) - total_dist;
-            ray.maxt = remaining_dist;
-            active &= remaining_dist > 0.f;
-            if (none(active))
-                break;
-
-            Mask escaped_medium = false;
-            Mask active_medium  = active && neq(medium, nullptr);
-            Mask active_surface = active && !active_medium;
-            Mask is_sampled_emitter = active && eq(medium, sampled_medium);
-
-            if (any_or<true>(active_medium)) {
-                auto mi = medium->sample_interaction(ray, sampler->next_1d(active_medium), channel, active_medium);
-                masked(ray.maxt, active_medium && medium->is_homogeneous() && mi.is_valid()) = min(mi.t, remaining_dist);
-                Mask intersect = needs_intersection && active_medium;
-                if (any_or<true>(intersect))
-                    masked(si, intersect) = scene->ray_intersect(ray, intersect);
-
-                masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
-                needs_intersection &= !active_medium;
-
-                Mask is_spectral = medium->has_spectral_extinction() && active_medium;
-                Mask not_spectral = !is_spectral && active_medium;
-
-                auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, transmittance, channel, m_sampling_type);
-
-                if (any_or<true>(is_spectral)) {
-                    masked(mi.t, mi.m < 0.001f) = mi.mint + mi.sample * (1.1f * (min(mi.maxt, si.t) - mi.mint));
-                    Float t      = min(remaining_dist, min(mi.t, si.t)) - mi.mint;
-                    UnpolarizedSpectrum tr  = exp(-t * mi.combined_extinction);
-                    Float D                 = 1.f / (1.1f * (min(mi.maxt, si.t) - mi.mint));
-                    UnpolarizedSpectrum free_flight_pdf = select(si.t < mi.t || mi.t > remaining_dist, tr, tr * mi.combined_extinction);
-                    masked(free_flight_pdf, mi.m < 0.001f) = select(si.t < mi.t || mi.t > remaining_dist, 0.1f / 1.1f, D);
-                    Float tr_pdf = index_spectrum(free_flight_pdf, channel);
-                    masked(transmittance, is_spectral) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
-                    if (any_or<true>(is_sampled_emitter)) {
-                        masked(emitter_val, is_sampled_emitter) += select(tr_pdf > 0.f, weight_emission * transmittance * mi.radiance, 0.f);
-                    }
-                }
-
-                // Handle exceeding the maximum distance by medium sampling
-                masked(total_dist, active_medium && (mi.t > remaining_dist) && mi.is_valid()) = ds.dist;
-                masked(mi.t, active_medium && (mi.t > remaining_dist)) = math::Infinity<Float>;
-
-                escaped_medium = active_medium && !mi.is_valid();
-                active_medium &= mi.is_valid();
-                is_spectral &= active_medium;
-                not_spectral &= active_medium;
-
-                masked(total_dist, active_medium) += mi.t;
-
-                if (any_or<true>(active_medium)) {
-                    masked(ray.o, active_medium)    = mi.p;
-                    masked(ray.mint, active_medium) = 0.f;
-                    masked(si.t, active_medium) = si.t - mi.t;
-                    // Compute emmission, scatter and null event probabilities
-
-                    masked(transmittance, active_medium) *= mi.sigma_n;
-                }
-            }
-
-            // Handle interactions with surfaces
-            Mask intersect = active_surface && needs_intersection;
-            if (any_or<true>(intersect))
-                masked(si, intersect)    = scene->ray_intersect(ray, intersect);
-            needs_intersection &= !intersect;
-            active_surface |= escaped_medium;
-            masked(total_dist, active_surface) += si.t;
-
-            active_surface &= si.is_valid() && active && !active_medium;
-            if (any_or<true>(active_surface)) {
-                auto bsdf         = si.bsdf(ray);
-                Spectrum bsdf_val = bsdf->eval_null_transmission(si, active_surface);
-                bsdf_val = si.to_world_mueller(bsdf_val, si.wi, si.wi);
-                masked(transmittance, active_surface) *= bsdf_val;
-            }
-
-            // Update the ray with new origin & t parameter
-            masked(ray, active_surface) = si.spawn_ray(ray.d);
-            ray.maxt = remaining_dist;
-            needs_intersection |= active_surface;
-
-            // Continue tracing through scene if non-zero weights exist
-            active &= (active_medium || active_surface) && any(neq(depolarize(transmittance), 0.f));
-
-            // If a medium transition is taking place: Update the medium pointer
-            Mask has_medium_trans = active_surface && si.is_medium_transition();
-            if (any_or<true>(has_medium_trans)) {
-                masked(medium, has_medium_trans) = si.target_medium(ray.d);
-            }
-        }
-        return { emitter_val, ds };
-    }
-
-
     std::pair<Spectrum, Float>
     evaluate_direct_light(const Interaction3f &ref_interaction, const Scene *scene,
                           Sampler *sampler, MediumPtr medium, Ray3f ray,
@@ -586,10 +487,10 @@ public:
 
         Spectrum emitter_val(0.0f);
 
-        // Assumes the ray was alread intersected to compute si_ray before calling this method
+        // Assumes the ray was already intersected to compute si_ray before calling this method
         Mask needs_intersection = false;
 
-        Spectrum transmittance(1.0f), prev_transmittance(1.0f);
+        Spectrum transmittance(1.0f);
         Float emitter_pdf(0.0f);
         SurfaceInteraction3f si = si_ray;
         while (any(active)) {
@@ -598,13 +499,13 @@ public:
             Mask active_surface = active && !active_medium;
             SurfaceInteraction3f si_medium;
             if (any_or<true>(active_medium)) {
-                auto mi = medium->sample_interaction(ray, sampler->next_1d(active_medium), channel, active_medium);
+                auto prev_transmittance = transmittance;
+                auto mi = medium->sample_interaction(ray, math::Infinity<Float>, sampler->next_1d(active_medium), channel, active_medium);
                 masked(ray.maxt, active_medium && medium->is_homogeneous() && mi.is_valid()) = mi.t;
                 Mask intersect = needs_intersection && active_medium;
                 if (any_or<true>(intersect))
                     masked(si, intersect) = scene->ray_intersect(ray, intersect);
 
-                masked(mi.t, mi.m < 0.001f) = mi.mint + mi.sample * (1.1f * (min(mi.maxt, si.t) - mi.mint));
                 masked(mi.t, active_medium && (si.t < mi.t)) = math::Infinity<Float>;
 
                 Mask is_spectral = medium->has_spectral_extinction() && active_medium;
@@ -612,8 +513,6 @@ public:
                 if (any_or<true>(is_spectral)) {
                     auto [tr, free_flight_pdf] = medium->eval_tr_and_pdf(mi, si, is_spectral);
                     Float tr_pdf = index_spectrum(free_flight_pdf, channel);
-                    //Float tr_pdf       = hmin(free_flight_pdf);
-                    prev_transmittance = transmittance;
                     masked(transmittance, is_spectral) *= select(tr_pdf > 0.f, tr / tr_pdf, 0.f);
                 }
 
@@ -624,11 +523,13 @@ public:
                 if (any_or<true>(active_medium)) {
                     masked(ray.o, active_medium)    = mi.p;
                     masked(ray.mint, active_medium) = 0.f;
-                    masked(si.t, active_medium) = si.t - mi.t;
-                    // Compute emmission, scatter and null event probabilities
+                    masked(si.t, active_medium)     = si.t - mi.t;
                     auto [prob_emission, prob_scatter, prob_null, weight_emission, weight_scatter, weight_null] = medium_probabilities(mi, prev_transmittance, channel, m_sampling_type);
 
-                    masked(transmittance, active_medium) *= mi.sigma_n;
+                    if (any_or<true>(is_spectral))
+                        masked(transmittance, is_spectral && active_medium) *= mi.sigma_n;
+                    if (any_or<true>(not_spectral))
+                        masked(transmittance, not_spectral && active_medium) *= mi.sigma_n / mi.combined_extinction;
                 }
             }
 
