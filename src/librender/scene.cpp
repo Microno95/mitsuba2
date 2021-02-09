@@ -215,7 +215,7 @@ Scene<Float, Spectrum>::sample_emitter_direction(const Interaction3f &ref, const
     }
 
     // ds.pdf *= (1.f - get_volume_emitter_probability());
-    // spec   *= (1.f - get_volume_emitter_probability());
+    // spec   *= rcp(1.f - get_volume_emitter_probability());
 
     return { ds, spec };
 }
@@ -230,10 +230,10 @@ Scene<Float, Spectrum>::pdf_emitter_direction(const Interaction3f &ref,
 
     if (m_emitters.size() == 1) {
         // Fast path if there is only one emitter
-        return m_emitters[0]->pdf_direction(ref, ds, active) * (1.f - get_volume_emitter_probability());
+        return m_emitters[0]->pdf_direction(ref, ds, active); // * (1.f - get_volume_emitter_probability());
     } else {
         return reinterpret_array<EmitterPtr>(ds.object)->pdf_direction(ref, ds, active) *
-            (1.f / m_emitters.size()) * (1.f - get_volume_emitter_probability());
+            (1.f / m_emitters.size()); // * (1.f - get_volume_emitter_probability());
     }
 }
 
@@ -287,16 +287,12 @@ Scene<Float, Spectrum>::sample_volume_emitter_direction(const Interaction3f &ref
         SurfaceInteraction3f si = ray_intersect(ray_vol, active);
 
         MediumInteraction3f mi = sampled_medium->sample_interaction(ray_vol, si.t, sample.y(), channel, active);
-        Float D       = 1.f / (min(si.t, mi.maxt) - mi.mint);
-        Float sampled_t = mi.mint + (mi.sample * D);
-        Mask valid_mi = active && (sampled_t <= min(si.t, mi.maxt));
-        mi.t = select(valid_mi, sampled_t, math::Infinity<Float>);
-        mi.p = ray_vol(mi.t);
+        Float tr = exp(-(mi.t - mi.mint) * mi.m);
 
-        UnpolarizedSpectrum tr = exp(-(mi.t - mi.mint) * mi.combined_extinction);
-
-        ds.pdf *= select(si.t < mi.t, 0.f, D);
-        spec = mi.radiance * tr * m_emissive_mediums.size();
+        masked(ds.pdf, active &&  mi.uniformly_sampled) *= select(si.t < mi.t, tr, tr * mi.m);
+        masked(ds.pdf, active && !mi.uniformly_sampled) *= select(si.t < mi.t, 0.01f/1.01f, 1.f / mi.m);
+        masked(ds.pdf, active && !mi.is_valid()) = 0.f;
+        spec    = mi.radiance * tr * m_emissive_mediums.size();
 
         // Perform a visibility test if requested
         if (test_visibility && any_or<true>(active)) {
@@ -344,9 +340,13 @@ MTS_VARIANT Float Scene<Float, Spectrum>::pdf_volume_emitter_direction(const Int
     SurfaceInteraction3f si = ray_intersect(ray, active);
 
     MediumInteraction3f mi = sampled_medium->sample_interaction(ray, si.t, 0.f, channel, active);
-    Float D       = 1.f / (min(si.t, mi.maxt) - mi.mint);
-    Float sampled_t = mi.mint + (mi.sample * D);
-    return base_pdf * select(si.t < sampled_t, 0.f, D) * get_volume_emitter_probability();
+    Float tr = exp(-(mi.t - mi.mint) * mi.m);
+
+    masked(base_pdf, active &&  mi.uniformly_sampled) *= select(si.t < mi.t, tr, tr * mi.m);
+    masked(base_pdf, active && !mi.uniformly_sampled) *= select(si.t < mi.t, 0.01f/1.01f, 1.f / mi.m);
+    masked(base_pdf, active && !mi.is_valid()) = 0.f;
+    
+    return base_pdf * get_volume_emitter_probability();
 }
 
 MTS_VARIANT void Scene<Float, Spectrum>::traverse(TraversalCallback *callback) {
