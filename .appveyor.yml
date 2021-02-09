@@ -12,20 +12,33 @@ build:
   #- C:\Miniconda36-x64\pkgs
 environment:
   matrix:
-    - PYTHON_VERSION: 2.7
-      MINICONDA: C:\Miniconda-x64
+    #- PYTHON_VERSION: 3.6
+    #  MINICONDA: C:\Miniconda36-x64
+    #  BUILD_MODE: Debug
+    #- PYTHON_VERSION: 3.6
+    #  MINICONDA: C:\Miniconda36-x64
+    #  BUILD_MODE: Release
+    #- PYTHON_VERSION: 3.7
+    #  MINICONDA: C:\Miniconda37-x64
+    #  BUILD_MODE: Debug
+    #- PYTHON_VERSION: 3.7
+    #  MINICONDA: C:\Miniconda37-x64
+    #  BUILD_MODE: Release
+    - PYTHON_VERSION: 3.8
+      MINICONDA: C:\Miniconda38-x64
       BUILD_MODE: Debug
-    - PYTHON_VERSION: 3.5
-      MINICONDA: C:\Miniconda35-x64
+    - PYTHON_VERSION: 3.8
+      MINICONDA: C:\Miniconda38-x64
       BUILD_MODE: Release
   fast_finish: true
   priv_key:
     secure: 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
+
 install:
 - ps: |
-    $fileContent = "-----BEGIN RSA PRIVATE KEY-----`n"
+    $fileContent = "-----BEGIN OPENSSH PRIVATE KEY-----`n"
     $fileContent += $env:priv_key.Replace(' ', "`n")
-    $fileContent += "`n-----END RSA PRIVATE KEY-----`n"
+    $fileContent += "`n-----END OPENSSH PRIVATE KEY-----`n"
     Set-Content c:\users\appveyor\.ssh\id_rsa $fileContent
     (Get-Content .gitmodules).replace('https://github.com/mitsuba-renderer/enoki', 'git@github.com:mitsuba-renderer/enoki.git') | Set-Content .gitmodules
     git submodule -q update --init
