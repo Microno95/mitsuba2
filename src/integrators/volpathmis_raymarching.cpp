@@ -290,7 +290,7 @@ public:
                 Mask iteration_mask = active_medium;
                 masked(mi.t, eq(max_flight_distance, math::Infinity<Float>)) = math::Infinity<Float>;
                 iteration_mask &= mi.is_valid() && current_flight_distance < max_flight_distance;
-                Mask reached_density = false, non_scattering_media = false; // iteration_mask && !medium->has_scattering();
+                Mask reached_density = false, non_scattering_media = iteration_mask && !medium->has_scattering();
 
                 // Instantiate tracking of optical depth, this will be used to estimate throughput
                 Spectrum optical_depth(0.f), optical_step(0.f), tr(1.0f), total_radiance(0.f);
@@ -306,19 +306,18 @@ public:
                 // For homogeneous media we can simply sample the correct distance to achieve the desired density
                 masked(dt, iteration_mask &&  medium->is_homogeneous() && !non_scattering_media) = min(dt, desired_density / index_spectrum(local_st, channel));
 
-                // // If the medium is homogeneous, we don't have to integrate the radiance nor the optical depth
-                // // Update accumulators and ray position
-                // masked(current_flight_distance, medium->is_homogeneous()) += dt;
-                // masked(optical_depth,           medium->is_homogeneous())  = dt * local_st;
-                // masked(mi.t,                    medium->is_homogeneous()) += dt;
-                // masked(mi.p,                    medium->is_homogeneous())  = ray(mi.mint + dt);
-                // // If the medium has absorption/out-scattering, then the radiance is modulated by the transmittance
-                // masked(accumulated_radiance, medium->is_homogeneous() &&  non_scattering_media &&  medium->has_absorption()) = (local_radiance / local_st) * (1 - exp(-optical_depth));
-                // // If the medium has no absorption/out-scattering, then the radiance is just the linear sum of the radiating elements
-                // masked(accumulated_radiance, medium->is_homogeneous() &&  non_scattering_media && !medium->has_absorption()) = local_radiance * max_flight_distance;
-                // masked(accumulated_radiance, medium->is_homogeneous() && !non_scattering_media) = local_radiance;
+                // If the medium is homogeneous, we don't have to integrate the radiance nor the optical depth
+                // Update accumulators and ray position
+                masked(current_flight_distance, non_scattering_media && medium->is_homogeneous()) += dt;
+                masked(optical_depth,           non_scattering_media && medium->is_homogeneous())  = dt * local_st;
+                masked(mi.t,                    non_scattering_media && medium->is_homogeneous())  = mi.mint + dt;
+                masked(mi.p,                    non_scattering_media && medium->is_homogeneous())  = ray(mi.mint + dt);
+                // If the medium has absorption/out-scattering, then the radiance is modulated by the transmittance
+                masked(accumulated_radiance,    non_scattering_media && medium->is_homogeneous() &&  medium->has_absorption()) = (local_radiance / local_st) * (1 - exp(-optical_depth));
+                // If the medium has no absorption/out-scattering, then the radiance is just the linear sum of the radiating elements
+                masked(accumulated_radiance,    non_scattering_media && medium->is_homogeneous() && !medium->has_absorption()) = local_radiance * (mi.t - mi.mint);
 
-                // iteration_mask &= !medium->is_homogeneous() || !non_scattering_media;
+                iteration_mask &= !(non_scattering_media && medium->is_homogeneous());
 
                 // RK45 parameters
                 //     Optical Depth Function
