@@ -63,7 +63,7 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float next_surface
     }
 
     // -- Sample a free-flight distance --
-    mi.uniformly_sampled   = active && m < 0.001f && (next_surface_t < math::Infinity<Float>) && !is_natural();
+    mi.uniformly_sampled   = active && m < 0.001f && (next_surface_t < math::Infinity<Float>) && !is_natural() && has_emission();
     mi.m                   = select(mi.uniformly_sampled, min(next_surface_t, maxt) - mint, m);
     // Sampling based on infinite homogeneous medium assumption
     Float sampled_t = mint + select(mi.uniformly_sampled, 1.01f * sample * mi.m, -enoki::log(1 - sample) / mi.m);
